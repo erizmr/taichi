@@ -55,7 +55,7 @@ Expr Expr::operator!() {
 }
 
 void Expr::set_grad(const Expr &o) {
-  this->cast<GlobalVariableExpression>()->adjoint.set(o);
+  this->cast<GlobalVariableExpression>()->grad.set(o);
 }
 
 Expr::Expr(int16 x) : Expr() {
