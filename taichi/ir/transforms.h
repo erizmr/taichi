@@ -80,8 +80,7 @@ bool lower_access(IRNode *root,
                   const LowerAccessPass::Args &args);
 void auto_diff(IRNode *root,
                const CompileConfig &config,
-               bool use_stack = false,
-               bool reverse_mode = true);
+               bool use_stack = false);
 /**
  * Determine all adaptive AD-stacks' size. This pass is idempotent, i.e.,
  * there are no side effects if called more than once or called when not needed.
