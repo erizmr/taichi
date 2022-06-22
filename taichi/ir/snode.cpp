@@ -314,6 +314,11 @@ bool SNode::has_dual() const {
   return is_primal() && (grad_info->dual_snode() != nullptr);
 }
 
+bool SNode::is_dual_activated() const {
+  TI_ASSERT(has_dual());
+  return grad_info->dual_snode_activated;
+}
+
 SNode *SNode::get_adjoint() const {
   TI_ASSERT(has_adjoint());
   return grad_info->adjoint_snode();
@@ -322,6 +327,16 @@ SNode *SNode::get_adjoint() const {
 SNode *SNode::get_dual() const {
   TI_ASSERT(has_dual());
   return grad_info->dual_snode();
+}
+
+void SNode::deactivate_dual() {
+  TI_ASSERT(has_dual());
+  grad_info->dual_snode_activated = false;
+}
+
+void SNode::activate_dual() {
+  TI_ASSERT(has_dual());
+  grad_info->dual_snode_activated = true;
 }
 
 void SNode::set_snode_tree_id(int id) {
