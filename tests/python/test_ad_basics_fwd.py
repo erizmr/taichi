@@ -7,6 +7,7 @@ def test_ad_fwd_add():
     N = 5
     x = ti.field(ti.f32, shape=N)
     loss = ti.field(ti.f32, shape=N)
+    ti.root.lazy_dual()
 
     for i in range(N):
         x[i] = i
@@ -18,7 +19,7 @@ def test_ad_fwd_add():
     with ti.ad.FwdMode(loss=loss, parameters=x, seed=[0, 0, 0, 1, 0]):
         ad_fwd_add()
 
-    assert loss.grad[1] == 2
+    assert loss.dual[1] == 2
 
 
 @test_utils.test(arch=[ti.cpu, ti.gpu])
@@ -26,6 +27,7 @@ def test_ad_fwd_multiply():
     N = 5
     x = ti.field(ti.f32, shape=N)
     loss = ti.field(ti.f32, shape=N)
+    ti.root.lazy_dual()
 
     for i in range(N):
         x[i] = i
@@ -37,7 +39,7 @@ def test_ad_fwd_multiply():
     with ti.ad.FwdMode(loss=loss, parameters=x, seed=[0, 0, 0, 1, 1]):
         ad_fwd_multiply()
 
-    assert loss.grad[1] == 7
+    assert loss.dual[1] == 7
 
 
 @test_utils.test(arch=[ti.cpu, ti.gpu])
@@ -47,6 +49,7 @@ def test_multiple_calls():
     b = ti.field(float, shape=N)
     loss_1 = ti.field(float, shape=())
     loss_2 = ti.field(float, shape=())
+    ti.root.lazy_dual()
 
     for i in range(N):
         a[i] = i
@@ -60,26 +63,19 @@ def test_multiple_calls():
     with ti.ad.FwdMode(loss=loss_1, parameters=a,
                        seed=[1.0 for _ in range(N)]):
         multiple_calls()
-    assert loss_1.grad[None] == 30
-    assert not loss_2.snode.ptr.has_dual() and not b.snode.ptr.has_dual()
+    assert loss_1.dual[None] == 30
 
     with ti.ad.FwdMode(loss=loss_1, parameters=b,
                        seed=[1.0 for _ in range(N)]):
         multiple_calls()
-    assert loss_1.grad[None] == 6
-    assert not loss_2.snode.ptr.has_dual(
-    ) and not a.snode.ptr.is_dual_activated()
+    assert loss_1.dual[None] == 6
 
     with ti.ad.FwdMode(loss=loss_2, parameters=b,
                        seed=[1.0 for _ in range(N)]):
         multiple_calls()
-    assert loss_2.grad[None] == 16
-    assert not loss_1.snode.ptr.is_dual_activated(
-    ) and not a.snode.ptr.is_dual_activated()
+    assert loss_2.dual[None] == 16
 
     with ti.ad.FwdMode(loss=loss_2, parameters=a,
                        seed=[1.0 for _ in range(N)]):
         multiple_calls()
-    assert loss_2.grad[None] == 48
-    assert not loss_1.snode.ptr.is_dual_activated(
-    ) and not b.snode.ptr.is_dual_activated()
+    assert loss_2.dual[None] == 48

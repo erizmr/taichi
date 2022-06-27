@@ -1137,74 +1137,10 @@ class MakeDual : public ADTransform {
       // d (x * y) = y * dx + x * dy
       accumulate(bin, mul(bin->lhs, dual(bin->rhs)));
       accumulate(bin, mul(bin->rhs, dual(bin->lhs)));
-    } else if (is_comparison(bin->op_type) || is_bit_op(bin->op_type)) {
-      // do nothing
     } else {
       TI_WARN("gradient of binary op {}", binary_op_type_name(bin->op_type));
       TI_NOT_IMPLEMENTED
     }
-  }
-
-  void visit(IfStmt *if_stmt) override {
-    if (if_stmt->true_statements) {
-      std::vector<Stmt *> true_statements;
-      for (auto &stmt : if_stmt->true_statements->statements) {
-        true_statements.push_back(stmt.get());
-      }
-
-      for (auto stmt : true_statements) {
-        current_stmt = stmt;
-        stmt->accept(this);
-      }
-    }
-    if (if_stmt->false_statements) {
-      std::vector<Stmt *> false_statements;
-      for (auto &stmt : if_stmt->false_statements->statements) {
-        false_statements.push_back(stmt.get());
-      }
-
-      for (auto stmt : false_statements) {
-        current_stmt = stmt;
-        stmt->accept(this);
-      }
-    }
-  }
-
-  void visit(RangeForStmt *for_stmt) override {
-    std::vector<Stmt *> statements;
-    // always make a copy since the list can be modified.
-    for (auto &stmt : for_stmt->body->statements) {
-      statements.push_back(stmt.get());
-    }
-    for (auto stmt : statements) {
-      current_stmt = stmt;
-      stmt->accept(this);
-    }
-  }
-
-  void visit(StructForStmt *for_stmt) override {
-    // alloca_block = for_stmt->body.get();
-    for_stmt->body->accept(this);
-  }
-
-  void visit(LocalLoadStmt *stmt) override {
-    // TI_ASSERT(!needs_grad(stmt->ret_type));
-    accumulate(stmt, dual(stmt->src.data[0].var));
-  }
-
-  void visit(LocalStoreStmt *stmt) override {
-    // Clear the dual of the dest before local store,
-    // Because LocalStoreStmt overwrites the dest,
-    // If the alloca serves as the dest of multiple LocalStoreStmt, only the
-    // last LocalStoreStmt should be taken account of, i.e, its history should
-    // be cleared
-    if (needs_grad(stmt->dest->ret_type)) {
-      auto dtype = stmt->dest->ret_type;
-      auto zero = insert<ConstStmt>(TypedConstant(dtype, 0));
-      insert<LocalStoreStmt>(dual(stmt->dest), zero);
-    }
-
-    accumulate(stmt->dest, dual(stmt->val));
   }
 
   void visit(GlobalLoadStmt *stmt) override {
@@ -1212,7 +1148,7 @@ class MakeDual : public ADTransform {
     GlobalPtrStmt *src = stmt->src->as<GlobalPtrStmt>();
     TI_ASSERT(src->width() == 1);
     auto snodes = src->snodes;
-    if (!snodes[0]->has_dual() || !snodes[0]->is_dual_activated()) {
+    if (!snodes[0]->has_dual()) {
       // No dual SNode. Do nothing
       return;
     }
@@ -1230,7 +1166,7 @@ class MakeDual : public ADTransform {
     GlobalPtrStmt *dest = stmt->dest->as<GlobalPtrStmt>();
     TI_ASSERT(dest->width() == 1);
     auto snodes = dest->snodes;
-    if (!snodes[0]->has_dual() || !snodes[0]->is_dual_activated()) {
+    if (!snodes[0]->has_dual()) {
       // no gradient (likely integer types)
       return;
     }
@@ -1244,7 +1180,7 @@ class MakeDual : public ADTransform {
     GlobalPtrStmt *dest = stmt->dest->as<GlobalPtrStmt>();
     TI_ASSERT(dest->width() == 1);
     auto snodes = dest->snodes;
-    if (!snodes[0]->has_dual() || !snodes[0]->is_dual_activated()) {
+    if (!snodes[0]->has_dual()) {
       // no gradient (likely integer types)
       return;
     }

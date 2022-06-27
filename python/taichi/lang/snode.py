@@ -165,7 +165,12 @@ class SNode:
         To know more details about primal, adjoint fields and ``lazy_grad()``,
         please see Page 4 and Page 13-14 of DiffTaichi Paper: https://arxiv.org/pdf/1910.00935.pdf
         """
-        self.ptr.lazy_grad()
+        self.ptr.lazy_grad(True, False)
+
+    def lazy_dual(self):
+        """Automatically place the dual fields following the layout of their primal fields.
+        """
+        self.ptr.lazy_grad(False, True)
 
     def parent(self, n=1):
         """Gets an ancestor of `self` in the SNode tree.
@@ -184,9 +189,7 @@ class SNode:
             return None
 
         if p.type == _ti_core.SNodeType.root:
-            # The default root FieldsBuilder always has a SNode tree id equals to 0.
-            if p.get_snode_tree_id() == 0:
-                return impl.root
+            return impl.root
 
         return SNode(p)
 
@@ -198,7 +201,7 @@ class SNode:
         """
         p = self
         res = [p]
-        while p.ptr.type != _ti_core.SNodeType.root:
+        while p != impl.root:
             p = p.parent()
             res.append(p)
         res.reverse()
