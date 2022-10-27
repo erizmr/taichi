@@ -16,7 +16,11 @@ from taichi import _snode
 
 
 class Tape:
-    def __init__(self, loss=None, clear_gradients=True, validation=False):
+    def __init__(self,
+                 loss=None,
+                 clear_gradients=True,
+                 validation=False,
+                 checkpointer=None):
         """A context manager for reverse mode autodiff :class:`~taichi.ad.Tape`. The
         context manager would catching all of the callings of functions that
         decorated by :func:`~taichi.lang.kernel_impl.kernel` or
@@ -46,6 +50,8 @@ class Tape:
         self.calls = []
         self.entered = False
         self.gradient_evaluated = False
+        self.checkpointer = checkpointer
+        self.calls_count = 0
         self.clear_gradients = clear_gradients
         self.validation = validation
         self.runtime = impl.get_runtime()
@@ -86,12 +92,16 @@ class Tape:
 
     def insert(self, func, args):
         self.calls.append((func, args))
+        self.calls_count += 1
+        self.checkpointer.save(self.calls_count)
 
     def grad(self):
         assert self.entered, "Before evaluating gradients tape must be entered."
         assert not self.gradient_evaluated, "Gradients of grad can be evaluated only once."
         for func, args in reversed(self.calls):
+            self.checkpointer.restore(self.calls_count)
             func.grad(*args)
+            self.calls_count -= 1
         self.gradient_evaluated = True
 
 
