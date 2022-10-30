@@ -1677,11 +1677,20 @@ class AdStackPushStmt : public Stmt {
  public:
   Stmt *stack;
   Stmt *v;
+  Stmt *adj;
 
   AdStackPushStmt(Stmt *stack, Stmt *v) {
     TI_ASSERT(stack->is<AdStackAllocaStmt>());
     this->stack = stack;
     this->v = v;
+    TI_STMT_REG_FIELDS;
+  }
+
+  AdStackPushStmt(Stmt *stack, Stmt *v, Stmt *adj) {
+    TI_ASSERT(stack->is<AdStackAllocaStmt>());
+    this->stack = stack;
+    this->v = v;
+    this->adj = adj;
     TI_STMT_REG_FIELDS;
   }
 
