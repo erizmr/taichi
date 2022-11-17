@@ -11,16 +11,79 @@
 namespace taichi::lang {
 class IndependentBlocksJudger : public BasicStmtVisitor {
  public:
+  inline static const std::set<TernaryOpType> stack_needed_ternary_collections{
+      TernaryOpType::select};
+  inline static const std::set<UnaryOpType> stack_needed_unary_collections{
+      UnaryOpType::abs,  UnaryOpType::sin,  UnaryOpType::cos,
+      UnaryOpType::tanh, UnaryOpType::asin, UnaryOpType::acos,
+      UnaryOpType::exp,  UnaryOpType::log,  UnaryOpType::sqrt};
+  inline static const std::set<BinaryOpType> stack_needed_binary_collections{
+      BinaryOpType::mul, BinaryOpType::div, BinaryOpType::atan2,
+      BinaryOpType::pow};
   using BasicStmtVisitor::visit;
 
-  void visit(LocalLoadStmt *stmt) override {
-    TI_ASSERT(stmt->src->is<AllocaStmt>() || stmt->src->is<MatrixPtrStmt>());
-    touched_allocas_.insert(stmt->src);
+  // Check whether the target stmt is used by the UnaryOpStmts who requires the
+  // ad stack
+  void visit(UnaryOpStmt *stmt) override {
+    if (stack_needed_unary_collections.find(stmt->op_type) !=
+        stack_needed_unary_collections.end()) {
+      if (stmt->operand->is<GlobalLoadStmt>())
+        record_required_glb_ptrs_.insert(
+            stmt->operand->as<GlobalLoadStmt>()->src);
+    }
   }
+
+  // Check whether the target stmt is used by the BinaryOpStmts who requires the
+  // ad stack
+  void visit(BinaryOpStmt *stmt) override {
+    if (stack_needed_binary_collections.find(stmt->op_type) !=
+        stack_needed_binary_collections.end()) {
+      if (stmt->lhs->is<GlobalLoadStmt>())
+        record_required_glb_ptrs_.insert(stmt->lhs->as<GlobalLoadStmt>()->src);
+      if (stmt->rhs->is<GlobalLoadStmt>())
+        record_required_glb_ptrs_.insert(stmt->rhs->as<GlobalLoadStmt>()->src);
+    }
+  }
+
+  // Check whether the target stmt is used by the TernaryOpStmts who requires
+  // the ad stack
+  void visit(TernaryOpStmt *stmt) override {
+    if (stack_needed_ternary_collections.find(stmt->op_type) !=
+        stack_needed_ternary_collections.end()) {
+      if (stmt->op1->is<GlobalLoadStmt>())
+        record_required_glb_ptrs_.insert(stmt->op1->as<GlobalLoadStmt>()->src);
+      if (stmt->op2->is<GlobalLoadStmt>())
+        record_required_glb_ptrs_.insert(stmt->op2->as<GlobalLoadStmt>()->src);
+      if (stmt->op3->is<GlobalLoadStmt>())
+        record_required_glb_ptrs_.insert(stmt->op3->as<GlobalLoadStmt>()->src);
+    }
+  }
+
+  // Check whether the target serves as the condition of a if stmt
+  void visit(IfStmt *stmt) override {
+    if (stmt->cond->is<GlobalLoadStmt>())
+      record_required_glb_ptrs_.insert(stmt->cond->as<GlobalLoadStmt>()->src);
+
+    if (stmt->true_statements)
+      stmt->true_statements->accept(this);
+    if (stmt->false_statements)
+      stmt->false_statements->accept(this);
+  }
+
+  // void visit(LocalLoadStmt *stmt) override {
+  //   TI_ASSERT(stmt->src->is<AllocaStmt>() || stmt->src->is<MatrixPtrStmt>());
+  //   touched_allocas_.insert(stmt->src);
+  // }
 
   void visit(LocalStoreStmt *stmt) override {
     TI_ASSERT(stmt->dest->is<AllocaStmt>() || stmt->dest->is<MatrixPtrStmt>());
     touched_allocas_.insert(stmt->dest);
+  }
+
+  void visit(GlobalStoreStmt *stmt) override {
+    TI_ASSERT(stmt->dest->is<GlobalPtrStmt>());
+    if (stmt->dest->as<GlobalPtrStmt>()->snode->has_adjoint())
+      overwritten_glb_ptrs_.insert(stmt->dest);
   }
 
   void visit(AtomicOpStmt *stmt) override {
@@ -30,6 +93,8 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
     // MakeAdjoint anyway
     // 2. If the range for-loop is not innermost, they will be processed by
     // another IndependentBlocksJudger
+    if (stmt->dest->as<GlobalPtrStmt>()->snode->has_adjoint())
+      overwritten_glb_ptrs_.insert(stmt->dest);
     if (is_inside_loop_)
       return;
     TI_ASSERT(stmt->dest->is<GlobalPtrStmt>());
@@ -40,6 +105,8 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
 
   void visit(RangeForStmt *stmt) override {
     inner_most_loop_ = false;
+    if (!qualified_atomics_)
+      return;
     is_inside_loop_ = true;
     stmt->body->accept(this);
     is_inside_loop_ = false;
@@ -64,6 +131,16 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
       }
     }
 
+    for (const auto &glb_ptr : Judger.overwritten_glb_ptrs_) {
+      // Test if the overwritten global ptr is recorded required
+      if (Judger.record_required_glb_ptrs_.find(glb_ptr) !=
+          Judger.record_required_glb_ptrs_.end()) {
+        std::cout << "overwritten global ptr " << glb_ptr->id << " is found. "
+                  << std::endl;
+        return false;
+      }
+    }
+
     // To judge whether a block is an IB
     // 1. No local load/store to allocas *outside* itself has been strictly
     // enforced
@@ -74,6 +151,8 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
 
  private:
   std::set<Stmt *> touched_allocas_;
+  std::set<Stmt *> overwritten_glb_ptrs_;
+  std::set<Stmt *> record_required_glb_ptrs_;
   bool qualified_atomics_ = true;
   bool inner_most_loop_ = true;
   bool is_inside_loop_ = false;
@@ -211,7 +290,7 @@ class IdentifyIndependentBlocks : public BasicStmtVisitor {
       }
     }
     if (!has_for) {
-      // The whole block is an IB
+      // The whole block is the smallest IB
       pass.independent_blocks_.push_back({0, block});
     } else {
       root->accept(&pass);
@@ -250,7 +329,8 @@ class PromoteSSA2LocalVar : public BasicStmtVisitor {
       return;
     if (!(stmt->is<UnaryOpStmt>() || stmt->is<BinaryOpStmt>() ||
           stmt->is<TernaryOpStmt>() || stmt->is<BitExtractStmt>() ||
-          stmt->is<AllocaStmt>() || stmt->is<LoopIndexStmt>())) {
+          stmt->is<GlobalLoadStmt>() || stmt->is<AllocaStmt>() ||
+          stmt->is<LoopIndexStmt>())) {
       // TODO: this list may be incomplete
       return;
     }
