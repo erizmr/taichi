@@ -132,7 +132,6 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
       // Test if the alloca belongs to the current block
       if (outside_blocks.find(alloca->parent) != outside_blocks.end()) {
         // This block is not an IB since it loads/modifies outside variables
-        // return false;
         ib_meta_data.is_ib = false;
       }
     }
