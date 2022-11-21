@@ -136,7 +136,9 @@ class Tape:
                  loss=None,
                  clear_gradients=True,
                  validation=False,
-                 grad_check=None):
+                 grad_check=None,
+                 checkpointer=None,
+                 enable_checkpointing=True):
         """A context manager for reverse mode autodiff :class:`~taichi.ad.Tape`. The
         context manager would catching all of the callings of functions that
         decorated by :func:`~taichi.lang.kernel_impl.kernel` or
@@ -168,6 +170,9 @@ class Tape:
         self.modes = []
         self.entered = False
         self.gradient_evaluated = False
+        self.checkpointer = checkpointer
+        self.enable_checkpointing = enable_checkpointing
+        self.calls_count = 0
         self.clear_gradients = clear_gradients
         self.validation = validation
         self.runtime = impl.get_runtime()
@@ -210,8 +215,19 @@ class Tape:
 
     def __exit__(self, _type, value, tb):
         self.runtime.target_tape = None
+        # Save the computed forward result both in enable/disable checkpointing mode
+        assert self.checkpointer, "Checkpointer is not initialized."
+        self.checkpointer.save_primal("forward_result")
+
         if self.eval_on_exit:
             self.grad()
+
+        # Restore the computed forward result both in enable/disable checkpointing mode
+        assert self.checkpointer, "Checkpointer is not initialized."
+        self.checkpointer.restore_primal("forward_result")
+        self.checkpointer.clear_primal_checkpoint("forward_result")
+        self.checkpointer.clear()
+
         for calls, mode in zip(self.calls, self.modes):
             calls[0].autodiff_mode = mode
 
@@ -226,18 +242,34 @@ class Tape:
             func.autodiff_mode = AutodiffMode.VALIDATION
         self.calls.append((func, args))
 
+        if self.checkpointer and self.enable_checkpointing:
+            self.calls_count += 1
+            # Save a checkpoint before the kernel launch
+            self.checkpointer.save_primal(self.calls_count)
+            # print("calls count increase ", self.calls_count)
+
     def grad(self):
         assert self.entered, "Before evaluating gradients tape must be entered."
         assert not self.gradient_evaluated, "Gradients of grad can be evaluated only once."
 
         for func, args in reversed(self.calls):
+
+            if self.checkpointer and self.enable_checkpointing:
+                # Restore the checkpoint before launch the grad kernel
+                self.checkpointer.restore_primal(self.calls_count)
+            # TODO: how to preserve the value of the seed?
+            self.loss.grad.fill(1.0)
             # we need to check whether "func" has "grad" attribute
             # since we insert write_int and write_float kernels to self.calls
             # e.g. x[None] = 0.0, this func has no grad attribute
             if hasattr(func, 'grad'):
                 self.loss.grad.fill(1.0)
                 func.grad(*args)
-
+            if self.checkpointer and self.enable_checkpointing:
+                # Clean the consumed primal checkpoint
+                self.checkpointer.clear_primal_checkpoint(self.calls_count)
+                self.calls_count -= 1
+                # print("calls count decrease ", self.calls_count)
         self.gradient_evaluated = True
         if self.grad_checker:
             self.grad_checker.add_calls(self.calls)

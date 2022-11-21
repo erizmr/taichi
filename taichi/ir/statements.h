@@ -1687,7 +1687,6 @@ class AdStackPushStmt : public Stmt {
 
   // Mark has_global_side_effect == true to prevent being moved out of an if
   // clause in the simplify pass for now.
-
   TI_STMT_DEF_FIELDS(ret_type, stack, v);
   TI_DEFINE_ACCEPT_AND_CLONE
 };

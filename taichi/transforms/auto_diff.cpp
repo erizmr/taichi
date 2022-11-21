@@ -9,9 +9,75 @@
 #include <algorithm>
 
 namespace taichi::lang {
+
+class IndependentBlockMetaData {
+ public:
+  bool is_ib = true;
+  bool is_smallest_ib = true;
+};
+
 class IndependentBlocksJudger : public BasicStmtVisitor {
  public:
+  inline static const std::set<TernaryOpType> stack_needed_ternary_collections{
+      TernaryOpType::select};
+  inline static const std::set<UnaryOpType> stack_needed_unary_collections{
+      UnaryOpType::abs,  UnaryOpType::sin,  UnaryOpType::cos,
+      UnaryOpType::tanh, UnaryOpType::asin, UnaryOpType::acos,
+      UnaryOpType::exp,  UnaryOpType::log,  UnaryOpType::sqrt};
+  inline static const std::set<BinaryOpType> stack_needed_binary_collections{
+      BinaryOpType::mul, BinaryOpType::div, BinaryOpType::atan2,
+      BinaryOpType::pow};
   using BasicStmtVisitor::visit;
+
+  // // Check whether the target stmt is used by the UnaryOpStmts who requires
+  // the
+  // // ad stack
+  // void visit(UnaryOpStmt *stmt) override {
+  //   if (stack_needed_unary_collections.find(stmt->op_type) !=
+  //       stack_needed_unary_collections.end()) {
+  //     if (stmt->operand->is<GlobalLoadStmt>())
+  //       record_required_glb_ptrs_.insert(
+  //           stmt->operand->as<GlobalLoadStmt>()->src);
+  //   }
+  // }
+
+  // // Check whether the target stmt is used by the BinaryOpStmts who requires
+  // the
+  // // ad stack
+  // void visit(BinaryOpStmt *stmt) override {
+  //   if (stack_needed_binary_collections.find(stmt->op_type) !=
+  //       stack_needed_binary_collections.end()) {
+  //     if (stmt->lhs->is<GlobalLoadStmt>())
+  //       record_required_glb_ptrs_.insert(stmt->lhs->as<GlobalLoadStmt>()->src);
+  //     if (stmt->rhs->is<GlobalLoadStmt>())
+  //       record_required_glb_ptrs_.insert(stmt->rhs->as<GlobalLoadStmt>()->src);
+  //   }
+  // }
+
+  // // Check whether the target stmt is used by the TernaryOpStmts who requires
+  // // the ad stack
+  // void visit(TernaryOpStmt *stmt) override {
+  //   if (stack_needed_ternary_collections.find(stmt->op_type) !=
+  //       stack_needed_ternary_collections.end()) {
+  //     if (stmt->op1->is<GlobalLoadStmt>())
+  //       record_required_glb_ptrs_.insert(stmt->op1->as<GlobalLoadStmt>()->src);
+  //     if (stmt->op2->is<GlobalLoadStmt>())
+  //       record_required_glb_ptrs_.insert(stmt->op2->as<GlobalLoadStmt>()->src);
+  //     if (stmt->op3->is<GlobalLoadStmt>())
+  //       record_required_glb_ptrs_.insert(stmt->op3->as<GlobalLoadStmt>()->src);
+  //   }
+  // }
+
+  // // Check whether the target serves as the condition of a if stmt
+  // void visit(IfStmt *stmt) override {
+  //   if (stmt->cond->is<GlobalLoadStmt>())
+  //     record_required_glb_ptrs_.insert(stmt->cond->as<GlobalLoadStmt>()->src);
+
+  //   if (stmt->true_statements)
+  //     stmt->true_statements->accept(this);
+  //   if (stmt->false_statements)
+  //     stmt->false_statements->accept(this);
+  // }
 
   void visit(LocalLoadStmt *stmt) override {
     TI_ASSERT(stmt->src->is<AllocaStmt>() || stmt->src->is<MatrixPtrStmt>());
@@ -23,6 +89,12 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
     touched_allocas_.insert(stmt->dest);
   }
 
+  // void visit(GlobalStoreStmt *stmt) override {
+  //   TI_ASSERT(stmt->dest->is<GlobalPtrStmt>());
+  //   if (stmt->dest->as<GlobalPtrStmt>()->snode->has_adjoint())
+  //     overwritten_glb_ptrs_.insert(stmt->dest);
+  // }
+
   void visit(AtomicOpStmt *stmt) override {
     // We don't need to check the global atomics inside the range for-loops
     // because
@@ -30,11 +102,31 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
     // MakeAdjoint anyway
     // 2. If the range for-loop is not innermost, they will be processed by
     // another IndependentBlocksJudger
+
+    // if (stmt->dest->as<GlobalPtrStmt>()->snode->has_adjoint())
+    //   overwritten_glb_ptrs_.insert(stmt->dest);
+
     if (is_inside_loop_)
       return;
     TI_ASSERT(stmt->dest->is<GlobalPtrStmt>());
     if (stmt->dest->as<GlobalPtrStmt>()->snode->has_adjoint()) {
-      qualified_atomics_ = false;
+      qualified_glb_operations_ = true;
+    }
+  }
+
+  void visit(GlobalLoadStmt *stmt) override {
+    // We don't need to check the global load inside the range for-loops
+    // because
+    // 1. If the range for-loop is innermost, they will be captured by
+    // MakeAdjoint anyway
+    // 2. If the range for-loop is not innermost, they will be processed by
+    // another IndependentBlocksJudger
+    if (is_inside_loop_)
+      return;
+    // TODO: Handle the external ptr stmt when autodiff support ndarray
+    if (stmt->src->is<GlobalPtrStmt>() &&
+        stmt->src->as<GlobalPtrStmt>()->snode->has_adjoint()) {
+      qualified_glb_operations_ = true;
     }
   }
 
@@ -45,7 +137,7 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
     is_inside_loop_ = false;
   }
 
-  static bool run(IRNode *root) {
+  static void run(IRNode *root, IndependentBlockMetaData &ib_meta_data) {
     IndependentBlocksJudger Judger;
     Block *block = root->as<Block>();
     root->accept(&Judger);
@@ -60,21 +152,38 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
       // Test if the alloca belongs to the current block
       if (outside_blocks.find(alloca->parent) != outside_blocks.end()) {
         // This block is not an IB since it loads/modifies outside variables
-        return false;
+        ib_meta_data.is_ib = false;
       }
     }
 
+    // for (const auto &glb_ptr : Judger.overwritten_glb_ptrs_) {
+    //   // Test if the overwritten global ptr is recorded required
+    //   if (Judger.record_required_glb_ptrs_.find(glb_ptr) !=
+    //       Judger.record_required_glb_ptrs_.end()) {
+    //     std::cout << "overwritten global ptr " << glb_ptr->id << " is found.
+    //     "
+    //               << std::endl;
+    //     ib_meta_data.is_ib = false;
+    //   }
+    // }
+
     // To judge whether a block is an IB
-    // 1. No local load/store to allocas *outside* itself has been strictly
+    // - No local load/store to allocas *outside* itself has been strictly
     // enforced
-    // 2. If the #1 is satisfied, either an inner most loop or a block without
-    // global atomics is an IB
-    return Judger.qualified_atomics_ || Judger.inner_most_loop_;
+
+    // To judge whether a block is a smallest IB
+    // - If the #1 is satisfied, either an inner most loop or a block without
+    // global atomics / global load is an IB
+    ib_meta_data.is_smallest_ib =
+        ib_meta_data.is_ib &&
+        (Judger.qualified_glb_operations_ || Judger.inner_most_loop_);
   }
 
  private:
   std::set<Stmt *> touched_allocas_;
-  bool qualified_atomics_ = true;
+  std::set<Stmt *> overwritten_glb_ptrs_;
+  std::set<Stmt *> record_required_glb_ptrs_;
+  bool qualified_glb_operations_ = false;
   bool inner_most_loop_ = true;
   bool is_inside_loop_ = false;
 };
@@ -153,26 +262,25 @@ class IdentifyIndependentBlocks : public BasicStmtVisitor {
     TI_ERROR("WhileControlStmt (break) is not supported in AutoDiff.");
   }
 
-  bool is_independent_block(Block *block) {
+  void visit_loop_body(Block *block) {
+    auto ib_meta_data = IndependentBlockMetaData();
     // An IB has no local load/store to allocas *outside* itself
     // Note:
     //  - Local atomics should have been demoted before this pass.
     //  - It is OK for an IB to have more than two for loops.
-    //  - No atomics operations to the global variables which require gradient
+    //  - No global load/atomics operations to the global variables which
+    //  require gradient
+    if (block->statements.empty()) {
+      ib_meta_data.is_ib = false;
+    } else {
+      IndependentBlocksJudger::run(block, ib_meta_data);
+    }
 
-    return IndependentBlocksJudger::run(block);
-  }
-
-  void visit_loop_body(Block *block) {
-    if (is_independent_block(block)) {
+    if (ib_meta_data.is_smallest_ib) {
+      independent_blocks_.push_back({depth_, block});
+    } else if (ib_meta_data.is_ib) {
       current_ib_ = block;
-      auto old_current_ib_ = current_ib_;
       block->accept(this);
-      // Lower level block is not an IB, therefore store the current block as an
-      // IB
-      if (old_current_ib_ == current_ib_) {
-        independent_blocks_.push_back({depth_, current_ib_});
-      }
     } else {
       if (depth_ <= 1) {
         TI_ASSERT(depth_ == 1);
@@ -211,7 +319,7 @@ class IdentifyIndependentBlocks : public BasicStmtVisitor {
       }
     }
     if (!has_for) {
-      // The whole block is an IB
+      // The whole block is the smallest IB
       pass.independent_blocks_.push_back({0, block});
     } else {
       root->accept(&pass);
@@ -250,7 +358,8 @@ class PromoteSSA2LocalVar : public BasicStmtVisitor {
       return;
     if (!(stmt->is<UnaryOpStmt>() || stmt->is<BinaryOpStmt>() ||
           stmt->is<TernaryOpStmt>() || stmt->is<BitExtractStmt>() ||
-          stmt->is<GlobalLoadStmt>() || stmt->is<AllocaStmt>())) {
+          stmt->is<GlobalLoadStmt>() || stmt->is<AllocaStmt>() ||
+          stmt->is<LoopIndexStmt>())) {
       // TODO: this list may be incomplete
       return;
     }
@@ -421,16 +530,82 @@ class AdStackAllocaJudger : public BasicStmtVisitor {
   bool load_only_ = true;
 };
 
+class GlobalDataModifiedChecker : public BasicStmtVisitor {
+  using BasicStmtVisitor::visit;
+
+ private:
+  GlobalPtrStmt *glb_ptr_stmt;
+
+ public:
+  void visit(GlobalStoreStmt *stmt) override {
+    if (modified_)
+      return;
+    if (stmt->dest == glb_ptr_stmt) {
+      // std::cout << " As a GlobalStoreStmt dest: " << stmt->id << " it is"
+      //           << glb_ptr_stmt->type() << " " << glb_ptr_stmt->id <<
+      //           std::endl;
+      modified_ = true;
+    }
+  }
+  void visit(AtomicOpStmt *stmt) override {
+    if (modified_)
+      return;
+    if (stmt->dest == glb_ptr_stmt) {
+      // std::cout << " As a AtomicOpStmt dest: " << stmt->id << " it is"
+      //           << glb_ptr_stmt->type() << " " << glb_ptr_stmt->id <<
+      //           std::endl;
+      modified_ = true;
+    }
+  }
+
+  bool modified_ = false;
+  GlobalDataModifiedChecker(Block *block, GlobalPtrStmt *stmt) {
+    glb_ptr_stmt = stmt;
+  }
+  static bool run(Block *block, GlobalPtrStmt *stmt) {
+    GlobalDataModifiedChecker pass(block, stmt);
+    block->accept(&pass);
+    return pass.modified_;
+  }
+};
+
 class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
+ private:
+  std::map<Block *, Block *> ib_to_top_level_block_;
+  Block *ib_;
+  std::map<SNode *, Stmt *> snode_to_stack_;
+
  public:
   using BasicStmtVisitor::visit;
   int ad_stack_size;
-  explicit ReplaceLocalVarWithStacks(int ad_stack_size)
+  explicit ReplaceLocalVarWithStacks(int ad_stack_size, Block *block)
       : ad_stack_size(ad_stack_size) {
+    ib_ = block;
+    find_top_level_block(block);
+  }
+
+  void find_top_level_block(Block *block) {
+    // TODO: simplify the logic...
+    Block *current_block = block;
+    Block *the_second_to_current_block = nullptr;
+    while (current_block->parent_block() != nullptr) {
+      if (current_block->parent_stmt->is<StructForStmt>()) {
+        break;
+      }
+      the_second_to_current_block = current_block;
+      current_block = current_block->parent_block();
+    }
+    if (the_second_to_current_block &&
+        the_second_to_current_block->parent_stmt->is<RangeForStmt>()) {
+      ib_to_top_level_block_[block] = the_second_to_current_block;
+    } else {
+      ib_to_top_level_block_[block] = current_block;
+    }
   }
 
   void visit(AllocaStmt *alloc) override {
     bool is_stack_needed = AdStackAllocaJudger::run(alloc);
+    // std::cout << "Check alloc " << alloc->id << std::endl;
     if (is_stack_needed) {
       auto dtype = alloc->ret_type;
       auto stack_alloca = Stmt::make<AdStackAllocaStmt>(dtype, ad_stack_size);
@@ -453,9 +628,113 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
   }
 
   void visit(LocalStoreStmt *stmt) override {
-    if (stmt->dest->is<AdStackAllocaStmt>())
+    if (stmt->dest->is<AdStackAllocaStmt>()) {
       stmt->replace_with(Stmt::make<AdStackPushStmt>(stmt->dest, stmt->val));
+    }
   }
+
+  // // TODO: Handle more global load src
+  // void visit(GlobalLoadStmt *stmt) override {
+  //   GlobalPtrStmt *glb_ptr = stmt->src->as<GlobalPtrStmt>();
+  //   Stmt *stack_alloca_ptr = nullptr;
+  //   auto dtype = stmt->ret_type;
+  //   // std::cout << stmt->type() << " " << stmt->id << " type "
+  //   //           << dtype->to_string() << std::endl;
+  //   if (snode_to_stack_.find(glb_ptr->snode) == snode_to_stack_.end()) {
+  //     bool is_modifed = GlobalDataModifiedChecker::run(ib_, glb_ptr);
+  //     if (!is_modifed) {
+  //       return;
+  //     }
+  //     // std::cout << "Required field stack: " << glb_ptr->type() << " "
+  //     //           << glb_ptr->id << " type " << dtype->to_string() <<
+  //     std::endl; TI_ASSERT(ib_); auto stack_alloca =
+  //     Stmt::make<AdStackAllocaStmt>(dtype, 0); stack_alloca_ptr =
+  //     stack_alloca.get();
+  //     ib_to_top_level_block_[ib_]->insert(std::move(stack_alloca), 0);
+  //     snode_to_stack_[glb_ptr->snode] = stack_alloca_ptr;
+
+  //     // Load the value of the global ptr and push it into the stack
+  //     auto value =
+  //         glb_ptr->insert_after_me(Stmt::make<GlobalLoadStmt>(glb_ptr));
+  //     value->insert_after_me(
+  //         Stmt::make<AdStackPushStmt>(stack_alloca_ptr, value));
+  //   } else {
+  //     stack_alloca_ptr = snode_to_stack_[glb_ptr->snode];
+  //   }
+
+  //   auto load =
+  //       stmt->insert_after_me(Stmt::make<AdStackLoadTopStmt>(stack_alloca_ptr));
+  //   irpass::replace_all_usages_with(stmt->parent, stmt, load);
+  //   stmt->parent->erase(stmt);
+  // }
+
+  // void visit(GlobalStoreStmt *stmt) override {
+  //   GlobalPtrStmt *glb_ptr = stmt->dest->as<GlobalPtrStmt>();
+  //   Stmt *stack_alloca_ptr = nullptr;
+  //   auto dtype = stmt->dest->ret_type.ptr_removed();
+  //   // std::cout << stmt->type() << " " << stmt->id << " type "
+  //   //           << dtype->to_string() << std::endl;
+  //   if (snode_to_stack_.find(glb_ptr->snode) == snode_to_stack_.end()) {
+  //     bool is_modifed = GlobalDataModifiedChecker::run(ib_, glb_ptr);
+  //     if (!is_modifed) {
+  //       return;
+  //     }
+  //     // std::cout << "Required field stack: " << glb_ptr->type() << " "
+  //     //           << glb_ptr->id << " type " << dtype->to_string() <<
+  //     std::endl; TI_ASSERT(ib_); auto stack_alloca =
+  //     Stmt::make<AdStackAllocaStmt>(dtype, 0); stack_alloca_ptr =
+  //     stack_alloca.get();
+  //     ib_to_top_level_block_[ib_]->insert(std::move(stack_alloca), 0);
+  //     snode_to_stack_[glb_ptr->snode] = stack_alloca_ptr;
+
+  //     // Load the value of the global ptr and push it into the stack
+  //     auto value =
+  //         glb_ptr->insert_after_me(Stmt::make<GlobalLoadStmt>(glb_ptr));
+  //     value->insert_after_me(
+  //         Stmt::make<AdStackPushStmt>(stack_alloca_ptr, value));
+  //   } else {
+  //     stack_alloca_ptr = snode_to_stack_[glb_ptr->snode];
+  //   }
+
+  //   // Record the modifed value
+  //   auto value = stmt->insert_after_me(Stmt::make<GlobalLoadStmt>(glb_ptr));
+  //   value->insert_after_me(
+  //       Stmt::make<AdStackPushStmt>(stack_alloca_ptr, value));
+  // }
+
+  // void visit(AtomicOpStmt *stmt) override {
+  //   GlobalPtrStmt *glb_ptr = stmt->dest->as<GlobalPtrStmt>();
+  //   Stmt *stack_alloca_ptr = nullptr;
+  //   auto dtype = stmt->dest->ret_type.ptr_removed();
+  //   // std::cout << stmt->type() << " " << stmt->id << " type "
+  //   //           << dtype->to_string() << std::endl;
+  //   if (snode_to_stack_.find(glb_ptr->snode) == snode_to_stack_.end()) {
+  //     bool is_modifed = GlobalDataModifiedChecker::run(ib_, glb_ptr);
+  //     if (!is_modifed) {
+  //       return;
+  //     }
+  //     // std::cout << "Required field stack: " << glb_ptr->type() << " "
+  //     //           << glb_ptr->id << " type " << dtype->to_string() <<
+  //     std::endl; TI_ASSERT(ib_); auto stack_alloca =
+  //     Stmt::make<AdStackAllocaStmt>(dtype, 0); stack_alloca_ptr =
+  //     stack_alloca.get();
+  //     ib_to_top_level_block_[ib_]->insert(std::move(stack_alloca), 0);
+  //     snode_to_stack_[glb_ptr->snode] = stack_alloca_ptr;
+
+  //     // Load the value of the global ptr and push it into the stack
+  //     auto value =
+  //         glb_ptr->insert_after_me(Stmt::make<GlobalLoadStmt>(glb_ptr));
+  //     value->insert_after_me(
+  //         Stmt::make<AdStackPushStmt>(stack_alloca_ptr, value));
+  //   } else {
+  //     stack_alloca_ptr = snode_to_stack_[glb_ptr->snode];
+  //   }
+
+  //   // Record the modifed value
+  //   auto value = stmt->insert_after_me(Stmt::make<GlobalLoadStmt>(glb_ptr));
+  //   value->insert_after_me(
+  //       Stmt::make<AdStackPushStmt>(stack_alloca_ptr, value));
+  // }
 };
 
 class ReverseOuterLoops : public BasicStmtVisitor {
@@ -995,6 +1274,10 @@ class MakeAdjoint : public ADTransform {
     insert<AdStackPopStmt>(stmt->stack);
   }
 
+  void visit(GlobalPtrStmt *stmt) override {
+    // do nothing
+  }
+
   void visit(GlobalLoadStmt *stmt) override {
     // issue global store to adjoint
     if (stmt->src->is<ExternalPtrStmt>()) {
@@ -1013,6 +1296,8 @@ class MakeAdjoint : public ADTransform {
     }
 
     auto snode = src->snode;
+
+    /////////////////////////////////////
     if (!snode->has_adjoint()) {
       // No adjoint SNode. Do nothing
       return;
@@ -1023,6 +1308,7 @@ class MakeAdjoint : public ADTransform {
     }
     TI_ASSERT(snode->get_adjoint() != nullptr);
     snode = snode->get_adjoint();
+
     auto adj_ptr = insert<GlobalPtrStmt>(snode, src->indices);
     if (is_ptr_offset) {
       adj_ptr = insert<MatrixPtrStmt>(adj_ptr,
@@ -1055,6 +1341,7 @@ class MakeAdjoint : public ADTransform {
     }
     TI_ASSERT(snode->get_adjoint() != nullptr);
     snode = snode->get_adjoint();
+
     auto adjoint_ptr = insert<GlobalPtrStmt>(snode, dest->indices);
     if (is_ptr_offset) {
       adjoint_ptr = insert<MatrixPtrStmt>(
@@ -1067,6 +1354,7 @@ class MakeAdjoint : public ADTransform {
         TypedConstant(adjoint_ptr->ret_type.ptr_removed(), 0));
     insert<GlobalStoreStmt>(adjoint_ptr, zero);
 
+    // TODO: preserve the global load and atomic add
     stmt->parent->erase(stmt);
   }
 
@@ -1095,6 +1383,8 @@ class MakeAdjoint : public ADTransform {
           adjoint_ptr, stmt->dest->as<MatrixPtrStmt>()->offset);
     }
     accumulate(stmt->val, insert<GlobalLoadStmt>(adjoint_ptr));
+
+    // TODO: preserve the global load and atomic add
     stmt->parent->erase(stmt);
   }
 };
@@ -1530,6 +1820,7 @@ void auto_diff(IRNode *root,
                AutodiffMode autodiff_mode,
                bool use_stack) {
   TI_AUTO_PROF;
+  auto print = irpass::make_pass_printer(true, "autodiff debug", root);
   if (autodiff_mode == AutodiffMode::kReverse) {
     if (use_stack) {
       auto IB = IdentifyIndependentBlocks::run(root);
@@ -1537,13 +1828,19 @@ void auto_diff(IRNode *root,
 
       for (auto ib : IB) {
         PromoteSSA2LocalVar::run(ib);
-        ReplaceLocalVarWithStacks replace(config.ad_stack_size);
+        print("after promote SSA");
+        ReplaceLocalVarWithStacks replace(config.ad_stack_size, ib);
         ib->accept(&replace);
+        print("after replace with stack");
         type_check(root, config);
         MakeAdjoint::run(ib);
+        // print("after make adjoint");
         type_check(root, config);
+        // print("before backup SSA");
         BackupSSA::run(ib);
+        // print("after backup ssa");
         irpass::analysis::verify(root);
+        // print("after verify");
       }
     } else {
       auto IB = IdentifyIndependentBlocks::run(root);
