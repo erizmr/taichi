@@ -309,8 +309,8 @@ class PromoteSSA2LocalVar : public BasicStmtVisitor {
       // and it will be replaced by a AdStackPushStmt in the following
       // ReplaceLocalVarWithStacks pass
       auto dtype = stmt->ret_type;
-      auto zero =
-          stmt->insert_after_me(Stmt::make<ConstStmt>(TypedConstant(dtype, 0)));
+      auto zero = stmt->insert_after_me(
+          Stmt::make<ConstStmt>(TypedConstant(PrimitiveType::f32, 0)));
       zero->insert_after_me(Stmt::make<LocalStoreStmt>(alloc_ptr, zero));
       // Remove the old stmt
       stmt->parent->erase(stmt);
@@ -473,7 +473,7 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
       // Note that unlike AllocaStmt, AdStackAllocaStmt does NOT have an 0 as
       // initial value. Therefore here we push an initial 0 value.
       auto zero = stack_alloca_ptr->insert_after_me(
-          Stmt::make<ConstStmt>(TypedConstant(dtype, 0)));
+          Stmt::make<ConstStmt>(TypedConstant(PrimitiveType::f32, 0)));
       zero->insert_after_me(
           Stmt::make<AdStackPushStmt>(stack_alloca_ptr, zero));
     }
@@ -897,7 +897,7 @@ class MakeAdjoint : public ADTransform {
                bin->op_type == BinaryOpType::max) {
       auto cmp = bin->op_type == BinaryOpType::min ? cmp_lt(bin->lhs, bin->rhs)
                                                    : cmp_lt(bin->rhs, bin->lhs);
-      auto zero = insert<ConstStmt>(TypedConstant(bin->ret_type));
+      auto zero = insert<ConstStmt>(TypedConstant(PrimitiveType::f32));
       accumulate(bin->lhs, sel(cmp, adjoint(bin), zero));
       accumulate(bin->rhs, sel(cmp, zero, adjoint(bin)));
     } else if (bin->op_type == BinaryOpType::floordiv) {
@@ -913,7 +913,7 @@ class MakeAdjoint : public ADTransform {
 
   void visit(TernaryOpStmt *stmt) override {
     TI_ASSERT(stmt->op_type == TernaryOpType::select);
-    auto zero = insert<ConstStmt>(TypedConstant(stmt->ret_type));
+    auto zero = insert<ConstStmt>(TypedConstant(PrimitiveType::f32));
     accumulate(stmt->op2,
                insert<TernaryOpStmt>(TernaryOpType::select, stmt->op1,
                                      load(adjoint(stmt)), zero));
@@ -1017,7 +1017,7 @@ class MakeAdjoint : public ADTransform {
     // last LocalStoreStmt should be taken account of
     if (is_real(stmt->dest->ret_type)) {
       auto dtype = stmt->dest->ret_type;
-      auto zero = insert<ConstStmt>(TypedConstant(dtype, 0));
+      auto zero = insert<ConstStmt>(TypedConstant(PrimitiveType::f32, 0));
       insert<LocalStoreStmt>(adjoint(stmt->dest), zero);
     }
   }
@@ -1100,8 +1100,7 @@ class MakeAdjoint : public ADTransform {
     accumulate(stmt->val, insert<GlobalLoadStmt>(adjoint_ptr));
 
     // Clear the gradient after accumulation finished.
-    auto zero = insert<ConstStmt>(
-        TypedConstant(adjoint_ptr->ret_type.ptr_removed(), 0));
+    auto zero = insert<ConstStmt>(TypedConstant(PrimitiveType::f32, 0));
     insert<GlobalStoreStmt>(adjoint_ptr, zero);
 
     stmt->parent->erase(stmt);
@@ -1287,7 +1286,7 @@ class MakeDual : public ADTransform {
                bin->op_type == BinaryOpType::max) {
       auto cmp = bin->op_type == BinaryOpType::min ? cmp_lt(bin->lhs, bin->rhs)
                                                    : cmp_lt(bin->rhs, bin->lhs);
-      auto zero = insert<ConstStmt>(TypedConstant(bin->ret_type));
+      auto zero = insert<ConstStmt>(TypedConstant(PrimitiveType::f32));
       accumulate(bin, sel(cmp, dual(bin->lhs), zero));
       accumulate(bin, sel(cmp, zero, dual(bin->rhs)));
     } else if (bin->op_type == BinaryOpType::floordiv) {
@@ -1303,7 +1302,7 @@ class MakeDual : public ADTransform {
 
   void visit(TernaryOpStmt *stmt) override {
     TI_ASSERT(stmt->op_type == TernaryOpType::select);
-    auto zero = insert<ConstStmt>(TypedConstant(stmt->ret_type));
+    auto zero = insert<ConstStmt>(TypedConstant(PrimitiveType::f32));
     accumulate(stmt, insert<TernaryOpStmt>(TernaryOpType::select, stmt->op1,
                                            load(dual(stmt->op2)), zero));
     accumulate(stmt, insert<TernaryOpStmt>(TernaryOpType::select, stmt->op1,
@@ -1368,7 +1367,7 @@ class MakeDual : public ADTransform {
     // be cleared
     if (is_real(stmt->dest->ret_type)) {
       auto dtype = stmt->dest->ret_type;
-      auto zero = insert<ConstStmt>(TypedConstant(dtype, 0));
+      auto zero = insert<ConstStmt>(TypedConstant(PrimitiveType::f32, 0));
       insert<LocalStoreStmt>(dual(stmt->dest), zero);
     }
 
@@ -1566,11 +1565,26 @@ class BackupSSA : public BasicStmtVisitor {
 
 namespace irpass {
 
+std::function<void(const std::string &)>
+make_pass_printer(bool verbose, const std::string &kernel_name, IRNode *ir) {
+  if (!verbose) {
+    return [](const std::string &) {};
+  }
+  return [ir, kernel_name](const std::string &pass) {
+    TI_INFO("[{}] {}:", kernel_name, pass);
+    std::cout << std::flush;
+    irpass::re_id(ir);
+    irpass::print(ir);
+    std::cout << std::flush;
+  };
+}
+
 void auto_diff(IRNode *root,
                const CompileConfig &config,
                AutodiffMode autodiff_mode,
                bool use_stack) {
   TI_AUTO_PROF;
+  auto print = make_pass_printer(true, "ad debug", root);
   if (autodiff_mode == AutodiffMode::kReverse) {
     if (use_stack) {
       auto IB = IdentifyIndependentBlocks::run(root);
@@ -1578,13 +1592,18 @@ void auto_diff(IRNode *root,
 
       for (auto ib : IB) {
         PromoteSSA2LocalVar::run(ib);
+        print("after SSA");
         ReplaceLocalVarWithStacks replace(config.ad_stack_size);
         ib->accept(&replace);
+        print("after with stack");
         type_check(root, config);
         MakeAdjoint::run(ib);
+        print("after make adjoint");
         type_check(root, config);
         BackupSSA::run(ib);
+        print("after backupSSA");
         irpass::analysis::verify(root);
+        print("after verify");
       }
     } else {
       auto IB = IdentifyIndependentBlocks::run(root);
@@ -1619,7 +1638,7 @@ class GloablDataAccessRuleChecker : public BasicStmtVisitor {
         stmt->insert_after_me(Stmt::make<GlobalPtrStmt>(snode, src->indices));
     auto dtype = global_ptr->ret_type;
     auto one = global_ptr->insert_after_me(
-        Stmt::make<ConstStmt>(TypedConstant(dtype, 1)));
+        Stmt::make<ConstStmt>(TypedConstant(PrimitiveType::f32, 1)));
     one->insert_after_me(Stmt::make<GlobalStoreStmt>(global_ptr, one));
   }
 
@@ -1635,8 +1654,8 @@ class GloablDataAccessRuleChecker : public BasicStmtVisitor {
     auto global_load =
         stmt->insert_before_me(Stmt::make<GlobalLoadStmt>(global_ptr));
     auto dtype = global_ptr->ret_type;
-    auto zero =
-        stmt->insert_before_me(Stmt::make<ConstStmt>(TypedConstant(dtype, 0)));
+    auto zero = stmt->insert_before_me(
+        Stmt::make<ConstStmt>(TypedConstant(PrimitiveType::f32, 0)));
     auto check_equal = stmt->insert_before_me(
         Stmt::make<BinaryOpStmt>(BinaryOpType::cmp_eq, global_load, zero));
     std::string msg = fmt::format(

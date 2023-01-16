@@ -131,9 +131,11 @@ void compile_to_offloads(IRNode *ir,
     irpass::full_simplify(ir, config,
                           {false, /*autodiff_enabled*/ true, kernel->program});
     irpass::auto_diff(ir, config, autodiff_mode, ad_use_stack);
+    print("before full simplify");
     // TODO: Be carefull with the full_simplify when do high-order autodiff
-    irpass::full_simplify(ir, config,
-                          {false, /*autodiff_enabled*/ false, kernel->program});
+    // irpass::full_simplify(ir, config,
+    //                       {false, /*autodiff_enabled*/ false,
+    //                       kernel->program});
     print("Gradient");
     irpass::analysis::verify(ir);
   }

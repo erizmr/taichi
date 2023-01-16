@@ -2,6 +2,7 @@
 #include <functional>
 #include <iterator>
 #include <type_traits>
+#include <typeinfo>
 
 #include "taichi/ir/analysis.h"
 #include "taichi/ir/ir.h"
@@ -141,6 +142,9 @@ void make_thread_local_offload(OffloadedStmt *offload) {
       auto tls_ptr = offload->tls_prologue->push_back<ThreadLocalPtrStmt>(
           tls_offset, TypeFactory::get_instance().get_pointer_type(data_type));
 
+      if (data_type == PrimitiveType::f16) {
+        data_type = PrimitiveType::f32;
+      }
       auto zero = offload->tls_prologue->insert(
           std::make_unique<ConstStmt>(
               dest.second == AtomicOpType::max   ? get_min_value(data_type)
