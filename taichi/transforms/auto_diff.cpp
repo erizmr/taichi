@@ -1592,18 +1592,18 @@ void auto_diff(IRNode *root,
 
       for (auto ib : IB) {
         PromoteSSA2LocalVar::run(ib);
-        print("after SSA");
+        // print("after SSA");
         ReplaceLocalVarWithStacks replace(config.ad_stack_size);
         ib->accept(&replace);
-        print("after with stack");
+        // print("after with stack");
         type_check(root, config);
         MakeAdjoint::run(ib);
-        print("after make adjoint");
+        // print("after make adjoint");
         type_check(root, config);
         BackupSSA::run(ib);
-        print("after backupSSA");
+        // print("after backupSSA");
         irpass::analysis::verify(root);
-        print("after verify");
+        // print("after verify");
       }
     } else {
       auto IB = IdentifyIndependentBlocks::run(root);
