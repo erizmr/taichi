@@ -640,7 +640,7 @@ def create_field_member(dtype, name, needs_grad, needs_dual):
         # adjoint
         x_grad = Expr(get_runtime().prog.make_id_expr(""))
         x_grad.declaration_tb = get_traceback(stacklevel=4)
-        x_grad.ptr = _ti_core.expr_field(x_grad.ptr, dtype)
+        x_grad.ptr = _ti_core.expr_field(x_grad.ptr, f32)
         x_grad.ptr.set_name(name + ".grad")
         x_grad.ptr.set_grad_type(SNodeGradType.ADJOINT)
         x.ptr.set_adjoint(x_grad.ptr)
