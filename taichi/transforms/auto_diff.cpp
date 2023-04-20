@@ -1579,18 +1579,30 @@ void auto_diff(IRNode *root,
   TI_AUTO_PROF;
   if (autodiff_mode == AutodiffMode::kReverse) {
     if (use_stack) {
-      auto IB = IdentifyIndependentBlocks::run(root);
-      ReverseOuterLoops::run(root, IB);
 
-      for (auto ib : IB) {
-        PromoteSSA2LocalVar::run(ib);
-        ReplaceLocalVarWithStacks replace(config.ad_stack_size);
-        ib->accept(&replace);
-        type_check(root, config);
-        MakeAdjoint::run(ib);
-        type_check(root, config);
-        BackupSSA::run(ib);
-        irpass::analysis::verify(root);
+
+      Block *block = root->as<Block>();
+      std::vector<Block *> offloaded_tasks;
+      for (auto &s : block->statements) {
+        if (s->is<OffloadedStmt>()) {
+          offloaded_tasks.push_back(s->as<OffloadedStmt>()->body.get());
+        }
+      }
+
+      for (auto task : offloaded_tasks) {
+        std::cout << task << std::endl;
+        auto IB = IdentifyIndependentBlocks::run(task);
+        ReverseOuterLoops::run(task, IB);
+        for (auto ib : IB) {
+          PromoteSSA2LocalVar::run(ib);
+          ReplaceLocalVarWithStacks replace(config.ad_stack_size);
+          ib->accept(&replace);
+          type_check(root, config);
+          MakeAdjoint::run(ib);
+          type_check(root, config);
+          BackupSSA::run(ib);
+          irpass::analysis::verify(root);
+        }
       }
     } else {
       auto IB = IdentifyIndependentBlocks::run(root);
