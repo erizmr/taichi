@@ -2413,15 +2413,20 @@ void TaskCodeGenLLVM::visit(AdStackAllocaStmt *stmt) {
 }
 
 void TaskCodeGenLLVM::visit(AdStackPopStmt *stmt) {
-  call("stack_pop", llvm_val[stmt->stack]);
+  // call("stack_pop", llvm_val[stmt->stack]);
 }
 
 void TaskCodeGenLLVM::visit(AdStackPushStmt *stmt) {
   auto stack = stmt->stack->as<AdStackAllocaStmt>();
-  call("stack_push", llvm_val[stack], tlctx->get_constant(stack->max_size),
-       tlctx->get_constant(stack->element_size_in_bytes()));
-  auto primal_ptr = call("stack_top_primal", llvm_val[stack],
-                         tlctx->get_constant(stack->element_size_in_bytes()));
+  // call("stack_push", llvm_val[stack], tlctx->get_constant(stack->max_size),
+  //      tlctx->get_constant(stack->element_size_in_bytes()));
+  
+  // auto primal_ptr = call("stack_top_primal", llvm_val[stack],
+  //                        tlctx->get_constant(stack->element_size_in_bytes()));
+  call("set_default_values", llvm_val[stack], tlctx->get_constant(stack->max_size),
+       tlctx->get_constant(stack->element_size_in_bytes()),  llvm_val[stmt->index]);
+  auto primal_ptr = call("stack_get_primal_index", llvm_val[stack],
+                         tlctx->get_constant(stack->element_size_in_bytes()), llvm_val[stmt->index]);
   primal_ptr = builder->CreateBitCast(
       primal_ptr,
       llvm::PointerType::get(tlctx->get_data_type(stmt->ret_type), 0));
@@ -2431,8 +2436,10 @@ void TaskCodeGenLLVM::visit(AdStackPushStmt *stmt) {
 void TaskCodeGenLLVM::visit(AdStackLoadTopStmt *stmt) {
   TI_ASSERT(stmt->return_ptr == false);
   auto stack = stmt->stack->as<AdStackAllocaStmt>();
-  auto primal_ptr = call("stack_top_primal", llvm_val[stack],
-                         tlctx->get_constant(stack->element_size_in_bytes()));
+  // auto primal_ptr = call("stack_top_primal", llvm_val[stack],
+                        //  tlctx->get_constant(stack->element_size_in_bytes()));
+  auto primal_ptr = call("stack_get_primal_index", llvm_val[stack],
+                         tlctx->get_constant(stack->element_size_in_bytes()), llvm_val[stmt->index]);
   auto primal_ty = tlctx->get_data_type(stmt->ret_type);
   primal_ptr =
       builder->CreateBitCast(primal_ptr, llvm::PointerType::get(primal_ty, 0));
@@ -2441,21 +2448,30 @@ void TaskCodeGenLLVM::visit(AdStackLoadTopStmt *stmt) {
 
 void TaskCodeGenLLVM::visit(AdStackLoadTopAdjStmt *stmt) {
   auto stack = stmt->stack->as<AdStackAllocaStmt>();
-  auto adjoint = call("stack_top_adjoint", llvm_val[stack],
-                      tlctx->get_constant(stack->element_size_in_bytes()));
+  // auto adjoint = call("stack_top_adjoint", llvm_val[stack],
+  //                     tlctx->get_constant(stack->element_size_in_bytes()));
+
+  auto adjoint_ptr = call("stack_get_adjoint_index", llvm_val[stack],
+                         tlctx->get_constant(stack->element_size_in_bytes()), llvm_val[stmt->index]);
   auto adjoint_ty = tlctx->get_data_type(stmt->ret_type);
-  adjoint =
-      builder->CreateBitCast(adjoint, llvm::PointerType::get(adjoint_ty, 0));
-  llvm_val[stmt] = builder->CreateLoad(adjoint_ty, adjoint);
+  adjoint_ptr =
+      builder->CreateBitCast(adjoint_ptr, llvm::PointerType::get(adjoint_ty, 0));
+  llvm_val[stmt] = builder->CreateLoad(adjoint_ty, adjoint_ptr);
 }
 
 void TaskCodeGenLLVM::visit(AdStackAccAdjointStmt *stmt) {
   auto stack = stmt->stack->as<AdStackAllocaStmt>();
-  auto adjoint_ptr = call("stack_top_adjoint", llvm_val[stack],
-                          tlctx->get_constant(stack->element_size_in_bytes()));
-  auto adjoint_ty = tlctx->get_data_type(stack->ret_type);
-  adjoint_ptr = builder->CreateBitCast(adjoint_ptr,
-                                       llvm::PointerType::get(adjoint_ty, 0));
+  // auto adjoint_ptr = call("stack_top_adjoint", llvm_val[stack],
+  //                         tlctx->get_constant(stack->element_size_in_bytes()));
+  // auto adjoint_ty = tlctx->get_data_type(stack->ret_type);
+  // adjoint_ptr = builder->CreateBitCast(adjoint_ptr,
+  //                                      llvm::PointerType::get(adjoint_ty, 0));
+
+  auto adjoint_ptr = call("stack_get_adjoint_index", llvm_val[stack],
+                         tlctx->get_constant(stack->element_size_in_bytes()), llvm_val[stmt->index]);
+  auto adjoint_ty = tlctx->get_data_type(stmt->ret_type);
+  adjoint_ptr = builder->CreateBitCast(adjoint_ptr, llvm::PointerType::get(adjoint_ty, 0));
+  
   auto old_val = builder->CreateLoad(adjoint_ty, adjoint_ptr);
   TI_ASSERT(is_real(stmt->v->ret_type));
   auto new_val = builder->CreateFAdd(old_val, llvm_val[stmt->v]);

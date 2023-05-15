@@ -1867,6 +1867,20 @@ void stack_push(Ptr stack, size_t max_num_elements, std::size_t element_size) {
   std::memset(stack_top_primal(stack, element_size), 0, element_size * 2);
 }
 
+
+Ptr stack_get_primal_index(Ptr stack, std::size_t element_size, std::uint32_t index) {
+  return stack + sizeof(u64) + (index - 1) * 2 * element_size;
+}
+
+Ptr stack_get_adjoint_index(Ptr stack, std::size_t element_size, std::uint32_t index) {
+  return stack_get_primal_index(stack, element_size, index) + element_size;
+}
+
+void set_default_values(Ptr stack, size_t max_num_elements, std::size_t element_size, std::uint32_t index) {
+  // TODO: assert n <= max_elements
+  std::memset(stack_get_primal_index(stack, element_size, index), 0, element_size * 2);
+}
+
 #include "internal_functions.h"
 
 // TODO: make here less repetitious.

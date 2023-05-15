@@ -747,18 +747,18 @@ class IRPrinter : public IRVisitor {
   }
 
   void visit(AdStackLoadTopStmt *stmt) override {
-    print("{}{} = stack load top {}", stmt->type_hint(), stmt->name(),
-          stmt->stack->name());
+    print("{}{} = stack load top {} index = {}", stmt->type_hint(), stmt->name(),
+          stmt->stack->name(), stmt->index->name());
   }
 
   void visit(AdStackLoadTopAdjStmt *stmt) override {
-    print("{}{} = stack load top adj {}", stmt->type_hint(), stmt->name(),
-          stmt->stack->name());
+    print("{}{} = stack load top adj {} index = {}", stmt->type_hint(), stmt->name(),
+          stmt->stack->name(), stmt->index->name());
   }
 
   void visit(AdStackPushStmt *stmt) override {
-    print("{}{} : stack push {}, val = {}", stmt->type_hint(), stmt->name(),
-          stmt->stack->name(), stmt->v->name());
+    print("{}{} : stack push {}, val = {} index = {}", stmt->type_hint(), stmt->name(),
+          stmt->stack->name(), stmt->v->name(), stmt->index->name());
   }
 
   void visit(AdStackPopStmt *stmt) override {
@@ -767,8 +767,8 @@ class IRPrinter : public IRVisitor {
   }
 
   void visit(AdStackAccAdjointStmt *stmt) override {
-    print("{}{} : stack acc adj {}, val = {}", stmt->type_hint(), stmt->name(),
-          stmt->stack->name(), stmt->v->name());
+    print("{}{} : stack acc adj {}, val = {} index = {}", stmt->type_hint(), stmt->name(),
+          stmt->stack->name(), stmt->v->name(), stmt->index->name());
   }
 
   void visit(ExternalTensorShapeAlongAxisStmt *stmt) override {

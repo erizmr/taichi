@@ -449,21 +449,21 @@ AdStackAllocaStmt *IRBuilder::create_ad_stack(const DataType &dt,
   return insert(Stmt::make_typed<AdStackAllocaStmt>(dt, max_size));
 }
 
-void IRBuilder::ad_stack_push(AdStackAllocaStmt *stack, Stmt *val) {
-  insert(Stmt::make_typed<AdStackPushStmt>(stack, val));
+void IRBuilder::ad_stack_push(AdStackAllocaStmt *stack, Stmt *val, Stmt *index) {
+  insert(Stmt::make_typed<AdStackPushStmt>(stack, val, index));
 }
 
 void IRBuilder::ad_stack_pop(AdStackAllocaStmt *stack) {
   insert(Stmt::make_typed<AdStackPopStmt>(stack));
 }
 
-AdStackLoadTopStmt *IRBuilder::ad_stack_load_top(AdStackAllocaStmt *stack) {
-  return insert(Stmt::make_typed<AdStackLoadTopStmt>(stack));
+AdStackLoadTopStmt *IRBuilder::ad_stack_load_top(AdStackAllocaStmt *stack, Stmt *index) {
+  return insert(Stmt::make_typed<AdStackLoadTopStmt>(stack, index));
 }
 
 AdStackLoadTopAdjStmt *IRBuilder::ad_stack_load_top_adjoint(
-    AdStackAllocaStmt *stack) {
-  return insert(Stmt::make_typed<AdStackLoadTopAdjStmt>(stack));
+    AdStackAllocaStmt *stack, Stmt *index) {
+  return insert(Stmt::make_typed<AdStackLoadTopAdjStmt>(stack, index));
 }
 
 MatrixInitStmt *IRBuilder::create_matrix_init(std::vector<Stmt *> elements) {
@@ -471,8 +471,8 @@ MatrixInitStmt *IRBuilder::create_matrix_init(std::vector<Stmt *> elements) {
 }
 
 void IRBuilder::ad_stack_accumulate_adjoint(AdStackAllocaStmt *stack,
-                                            Stmt *val) {
-  insert(Stmt::make_typed<AdStackAccAdjointStmt>(stack, val));
+                                            Stmt *val, Stmt *index) {
+  insert(Stmt::make_typed<AdStackAccAdjointStmt>(stack, val, index));
 }
 
 // Mesh related.

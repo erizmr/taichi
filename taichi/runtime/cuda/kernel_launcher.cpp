@@ -135,12 +135,25 @@ void KernelLauncher::launch_llvm_kernel(Handle handle,
     ctx.get_context().arg_buffer = device_arg_buffer;
   }
 
-  for (auto task : offloaded_tasks) {
-    TI_TRACE("Launching kernel {}<<<{}, {}>>>", task.name, task.grid_dim,
-             task.block_dim);
-    cuda_module->launch(task.name, task.grid_dim, task.block_dim, 0,
-                        {&ctx.get_context()}, {});
+  using nano = std::chrono::nanoseconds;
+  int repeats = 100;
+  CUDADriver::get_instance().stream_synchronize(nullptr);
+  auto start = std::chrono::high_resolution_clock::now();
+  for (int step=0; step<repeats; step++){
+    for (auto task : offloaded_tasks) {
+      TI_TRACE("Launching kernel {}<<<{}, {}>>>", task.name, task.grid_dim,
+              task.block_dim);
+      cuda_module->launch(task.name, task.grid_dim, task.block_dim, 0,
+                          {&ctx.get_context()}, {});
+    }
   }
+  CUDADriver::get_instance().stream_synchronize(nullptr);
+  auto finish = std::chrono::high_resolution_clock::now();
+
+  std::cout << "Grad kernel "<< offloaded_tasks[0].name << " time took "
+        << std::chrono::duration_cast<nano>(finish - start).count() / 1000 / repeats
+          << " micro seconds\n";
+
   if (ctx.arg_buffer_size > 0) {
     CUDADriver::get_instance().mem_free_async(device_arg_buffer, nullptr);
   }

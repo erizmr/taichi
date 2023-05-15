@@ -563,9 +563,11 @@ bool CFGNode::dead_store_elimination(bool after_lower_access) {
         // After lower_access, we only analyze local variables and stacks.
         if (live_load_in_this_node.find(load_ptr) !=
                 live_load_in_this_node.end() &&
-            !may_contain_variable(killed_in_this_node, load_ptr)) {
+            // !may_contain_variable(killed_in_this_node, load_ptr)) {
+            !may_contain_variable(killed_in_this_node, load_ptr) && !load_ptr->is<AdStackAllocaStmt>()) {
           // Only perform identical load elimination within a CFGNode.
           auto next_load_stmt = live_load_in_this_node[load_ptr];
+          std::cout << "is after lower access ? " << after_lower_access << " load ptr "<< load_ptr->id << " "<< load_ptr->type() << " stmt " << stmt->id << " " << stmt->type()  << " next load stmt " << next_load_stmt->id << " " << next_load_stmt->type() << std::endl;
           TI_ASSERT(irpass::analysis::same_statements(stmt, next_load_stmt));
           next_load_stmt->replace_usages_with(stmt);
           erase(block->locate(next_load_stmt));

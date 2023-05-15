@@ -272,11 +272,11 @@ class IRBuilder {
 
   // Autodiff stack operations.
   AdStackAllocaStmt *create_ad_stack(const DataType &dt, std::size_t max_size);
-  void ad_stack_push(AdStackAllocaStmt *stack, Stmt *val);
+  void ad_stack_push(AdStackAllocaStmt *stack, Stmt *val, Stmt *index);
   void ad_stack_pop(AdStackAllocaStmt *stack);
-  AdStackLoadTopStmt *ad_stack_load_top(AdStackAllocaStmt *stack);
-  AdStackLoadTopAdjStmt *ad_stack_load_top_adjoint(AdStackAllocaStmt *stack);
-  void ad_stack_accumulate_adjoint(AdStackAllocaStmt *stack, Stmt *val);
+  AdStackLoadTopStmt *ad_stack_load_top(AdStackAllocaStmt *stack, Stmt *index);
+  AdStackLoadTopAdjStmt *ad_stack_load_top_adjoint(AdStackAllocaStmt *stack, Stmt *index);
+  void ad_stack_accumulate_adjoint(AdStackAllocaStmt *stack, Stmt *val, Stmt *index);
 
   // Mesh related.
   MeshRelationAccessStmt *get_relation_size(mesh::Mesh *mesh,

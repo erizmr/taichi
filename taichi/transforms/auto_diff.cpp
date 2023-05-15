@@ -36,6 +36,73 @@ Stmt *insert_const(const DataType &dtype,
   return zero;
 }
 
+
+
+////////////////////
+// Hacky global map for storing stack index
+// The history of the stack indices outside the loop is tracked for backup ssa use
+std::map<Stmt*, std::pair<std::vector<Stmt*>, int>> stack_indices;
+std::set<Stmt*> stack_load_top_in_forward;
+
+Stmt* get_stack_index(Stmt* stmt, Stmt* running_stack_index) {
+  Stmt* stack = nullptr;
+  Stmt* stack_index = nullptr;
+  if (stmt->is<LocalLoadStmt>()){
+    std::cout << "????"<< std::endl;
+    stack = stmt->as<LocalLoadStmt>()->src;
+    if (running_stack_index){
+      auto stack_indices_stmts = stack_indices[stack].first;
+      int cnt = stack_indices[stack].second;
+      TI_ASSERT(cnt < stack_indices_stmts.size());
+      auto stack_index = stack_indices_stmts[cnt];
+      auto ret = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index, running_stack_index));
+      return ret;
+    }
+  }else if (stmt->is<LocalStoreStmt>()){
+    stack = stmt->as<LocalStoreStmt>()->dest;
+    if (running_stack_index){
+      auto stack_indices_stmts = stack_indices[stack].first;
+      int cnt = stack_indices[stack].second;
+
+      // ////// HACK ////////
+      // Add one 
+      auto one_index = insert_const(PrimitiveType::i32, stmt, 1, true);
+      auto stack_index_ = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_indices_stmts[cnt], one_index));
+      return stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index_, running_stack_index));
+    
+      // ////////////////////
+
+      // return stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_indices_stmts[cnt], running_stack_index));
+    }
+    else{
+      auto stack_indices_stmts = stack_indices[stack].first;
+      int cnt = stack_indices[stack].second;
+      // Add one 
+      auto one_index = insert_const(PrimitiveType::i32, stmt, 1, true);
+      stack_index = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_indices_stmts[cnt], one_index));
+      stack_indices[stack].first.push_back(stack_index);
+      stack_indices[stack].second++;
+    }
+  }else if (stmt->is<AdStackLoadTopStmt>()){
+    // stack = stmt->as<AdStackLoadTopStmt>()->stack;
+    // if (running_stack_index)
+    //   return Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_indices[stack], running_stack_index);
+    // stack_index = stack_indices[stack];
+  }else if (stmt->is<AdStackPushStmt>()){
+    // stack = stmt->as<AdStackPushStmt>()->stack;
+    // if (running_stack_index)
+    //   return stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_indices[stack], running_stack_index));
+    // // Substract one 
+    // auto one_index = insert_const(PrimitiveType::i32, stmt, 1, true);
+    // stack_indices[stack] = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stack_indices[stack], one_index));
+    // stack_index = stack_indices[stack];
+  }
+  TI_ASSERT(stack_index);
+  return stack_index;
+}
+
+////////////////////
+
 class IndependentBlockMetaData {
  public:
   bool is_ib = true;
@@ -687,11 +754,33 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
  public:
   using BasicStmtVisitor::visit;
   int ad_stack_size;
+  Stmt *running_stack_index{nullptr};
   DelayedIRModifier delayed_modifier_;
 
   explicit ReplaceLocalVarWithStacks(int ad_stack_size)
       : ad_stack_size(ad_stack_size) {
   }
+
+  void visit(RangeForStmt *stmt) override {
+    auto current_loop_index = stmt->body->insert(VecStatement(std::move(Stmt::make<LoopIndexStmt>(stmt, 0))), 0);
+    Stmt *stack_index_before = nullptr;
+    if (running_stack_index){
+      Stmt* range = nullptr;
+      // if(!stmt->reversed){
+      //   range = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stmt->end, stmt->begin));
+      // }else{
+      //   range = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stmt->begin, stmt->end));
+      // }
+      range = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stmt->end, stmt->begin));
+      stack_index_before = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::mul, running_stack_index, range));
+      running_stack_index = current_loop_index->insert_after_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index_before, current_loop_index));
+    }else{
+      running_stack_index = current_loop_index;
+    }
+    stmt->body->accept(this);
+    running_stack_index = stack_index_before;
+  }
+
 
   void visit(AllocaStmt *alloc) override {
     bool is_stack_needed = AdStackAllocaJudger::run(alloc);
@@ -705,14 +794,20 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
       // Note that unlike AllocaStmt, AdStackAllocaStmt does NOT have an 0 as
       // initial value. Therefore here we push an initial 0 value.
       auto zero = insert_const(dtype, stack_alloca_ptr, 0);
+      auto zero_index = insert_const(PrimitiveType::i32, zero, 0, true);
       zero->insert_after_me(
-          Stmt::make<AdStackPushStmt>(stack_alloca_ptr, zero));
+          Stmt::make<AdStackPushStmt>(stack_alloca_ptr, zero, zero_index));
+      
+
+      stack_indices[stack_alloca_ptr].first.push_back(zero_index);
+      stack_indices[stack_alloca_ptr].second = 0;
+
     }
   }
 
   void visit(LocalLoadStmt *stmt) override {
     if (stmt->src->is<AdStackAllocaStmt>()) {
-      auto stack_load = Stmt::make<AdStackLoadTopStmt>(stmt->src);
+      auto stack_load = Stmt::make<AdStackLoadTopStmt>(stmt->src, get_stack_index(stmt, running_stack_index));
       stack_load->ret_type = stmt->ret_type;
 
       stmt->replace_with(std::move(stack_load));
@@ -790,7 +885,7 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
           matrix_init_stmt->ret_type = tensor_type;
 
           auto stack_push = Stmt::make<AdStackPushStmt>(stack_top_stmt->stack,
-                                                        matrix_init_stmt.get());
+                                                        matrix_init_stmt.get(), running_stack_index);
           stmt->insert_before_me(std::move(matrix_init_stmt));
           stmt->replace_with(std::move(stack_push));
 
@@ -847,7 +942,7 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
           matrix_eq->ret_type = index_tensor_type;
 
           auto matrix_alloca_value =
-              Stmt::make<AdStackLoadTopStmt>(stack_top_stmt->stack);
+              Stmt::make<AdStackLoadTopStmt>(stack_top_stmt->stack, running_stack_index);
           matrix_alloca_value->ret_type = tensor_type;
 
           auto matrix_select = Stmt::make<TernaryOpStmt>(
@@ -856,7 +951,7 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
           matrix_select->ret_type = tensor_type;
 
           auto stack_push = Stmt::make<AdStackPushStmt>(stack_top_stmt->stack,
-                                                        matrix_select.get());
+                                                        matrix_select.get(), running_stack_index);
 
           stmt->insert_before_me(std::move(matrix_val));
           stmt->insert_before_me(std::move(matrix_offset));
@@ -872,14 +967,15 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
     }
 
     // Non Tensor-type
-    if (stmt->dest->is<AdStackAllocaStmt>())
-      stmt->replace_with(Stmt::make<AdStackPushStmt>(stmt->dest, stmt->val));
+    if (stmt->dest->is<AdStackAllocaStmt>()){
+      stmt->replace_with(Stmt::make<AdStackPushStmt>(stmt->dest, stmt->val, get_stack_index(stmt, running_stack_index)));
+    }
   }
 
   void visit(MatrixPtrStmt *stmt) override {
     if (stmt->origin->is<AdStackAllocaStmt>()) {
       auto stack_top =
-          Stmt::make<AdStackLoadTopStmt>(stmt->origin, true /*is_ptr*/);
+          Stmt::make<AdStackLoadTopStmt>(stmt->origin, running_stack_index, true /*is_ptr*/);
       stack_top->ret_type = stmt->origin->ret_type;
       stack_top->ret_type.set_is_pointer(true);
 
@@ -1146,6 +1242,7 @@ class MakeAdjoint : public ADTransform {
   // Should be restored after processing every statement in the two cases above
   Block *forward_backup;
   std::map<Stmt *, Stmt *> adjoint_stmt;
+  Stmt *running_stack_index{nullptr};
 
   explicit MakeAdjoint(Block *block) {
     current_block = nullptr;
@@ -1188,7 +1285,7 @@ class MakeAdjoint : public ADTransform {
     if (alloca_->is<AdStackAllocaStmt>()) {
       auto alloca = alloca_->cast<AdStackAllocaStmt>();
       if (is_real(alloca->ret_type.get_element_type())) {
-        insert<AdStackAccAdjointStmt>(alloca, load(value));
+        insert<AdStackAccAdjointStmt>(alloca, load(value), running_stack_index);
       }
     } else {
       TI_ASSERT(alloca_->is<AllocaStmt>());
@@ -1427,6 +1524,27 @@ class MakeAdjoint : public ADTransform {
       new_for_ptr->body->erase(0);
     }
 
+
+    //////////////////////////////////////////
+    // Compute stack index if needed
+    auto current_loop_index = new_for_ptr->body->insert(VecStatement(std::move(Stmt::make<LoopIndexStmt>(new_for_ptr, 0))), 0);
+    Stmt *stack_index_before = nullptr;
+    if (running_stack_index){
+      Stmt* range = nullptr;
+      // if(!new_for_ptr->reversed){
+      //   range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->end, new_for_ptr->begin));
+      // }else{
+      //   range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->begin, new_for_ptr->end));
+      // }
+      range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->end, new_for_ptr->begin));
+      stack_index_before = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::mul, running_stack_index, range));
+      running_stack_index = current_loop_index->insert_after_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index_before, current_loop_index));
+    }else{
+      running_stack_index = current_loop_index;
+    }
+    //////////////////////////////////////////
+
+
     std::vector<Stmt *> statements;
     // always make a copy since the list can be modified.
     for (auto &stmt : for_stmt->body->statements) {
@@ -1448,6 +1566,11 @@ class MakeAdjoint : public ADTransform {
     }
     forward_backup = old_forward_backup;
     alloca_block = old_alloca_block;
+
+
+    ////////////////////////////
+    running_stack_index = stack_index_before;
+    ////////////////////////////
   }
 
   void visit(StructForStmt *for_stmt) override {
@@ -1480,13 +1603,56 @@ class MakeAdjoint : public ADTransform {
   }
 
   void visit(AdStackLoadTopStmt *stmt) override {
-    if (is_real(stmt->ret_type.get_element_type()))
-      insert<AdStackAccAdjointStmt>(stmt->stack, load(adjoint(stmt)));
+    if (is_real(stmt->ret_type.get_element_type())){
+      std::cout << "is null " << running_stack_index << std::endl;
+      auto stack = stmt->as<AdStackLoadTopStmt>()->stack;
+      
+      auto stack_indices_stmts = stack_indices[stack].first;
+      auto cnt = stack_indices[stack].second;
+      auto stack_index = stack_indices_stmts[cnt];
+
+      if (running_stack_index){
+        stack_index = current_block->insert(VecStatement(std::move(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index, running_stack_index))), -1);
+        std::cout << "ad stack load top " << stmt->id << std::endl;
+      }
+      insert<AdStackAccAdjointStmt>(stmt->stack, load(adjoint(stmt)), stack_index);
+    }
   }
 
   void visit(AdStackPushStmt *stmt) override {
-    accumulate(stmt->v, insert<AdStackLoadTopAdjStmt>(stmt->stack));
-    insert<AdStackPopStmt>(stmt->stack);
+    std::cout << "is null " << running_stack_index << std::endl;
+    auto zero = insert_const_for_grad(PrimitiveType::i32, stmt, 0);
+
+    auto stack = stmt->as<AdStackPushStmt>()->stack;
+    
+    auto stack_indices_stmts = stack_indices[stack].first;
+    auto cnt = stack_indices[stack].second;
+    auto stack_index = stack_indices_stmts[cnt];
+
+    if (running_stack_index){
+
+      // ////// HACK ////////
+      // Add one 
+      auto one_index = insert_const(PrimitiveType::i32, stmt, 1, true);
+      auto stack_index_ = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index, one_index));
+      stack_index =  stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index_, running_stack_index));
+    
+      ////////////////////
+
+      stack_index = current_block->insert(VecStatement(std::move(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index, running_stack_index))), -1);
+      std::cout << "ad stack push " << stmt->id << std::endl;
+    }else{
+      // Substract one if not inside a loop
+      auto one_index = insert_const_for_grad(PrimitiveType::i32, stmt, 1);
+      auto stack_index_new = current_block->insert(VecStatement(std::move(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stack_index, one_index))), -1);
+      stack_indices[stack].first.push_back(stack_index_new);
+      stack_indices[stack].second++;
+    }
+
+    accumulate(stmt->v, insert<AdStackLoadTopAdjStmt>(stmt->stack, stack_index));
+    // insert<AdStackPopStmt>(stmt->stack);
+
+
   }
 
   void visit(GlobalLoadStmt *stmt) override {
@@ -2146,11 +2312,19 @@ class BackupSSA : public BasicStmtVisitor {
 
   Block *independent_block;
   std::map<Stmt *, Stmt *> backup_alloca;
+  Stmt *running_stack_index{nullptr};
 
   explicit BackupSSA(Block *independent_block)
       : independent_block(independent_block) {
     allow_undefined_visitor = true;
     invoke_default_visitor = true;
+    reset_stack_indices_counter();
+  }
+
+  void reset_stack_indices_counter(){
+    for(auto &item:stack_indices){
+      item.second.second = -1;
+    }
   }
 
   Stmt *load(Stmt *stmt) {
@@ -2182,9 +2356,40 @@ class BackupSSA : public BasicStmtVisitor {
               leaf_to_root.end() &&
           !op->is<AllocaStmt>()) {
         if (op->is<AdStackLoadTopStmt>()) {
+          
           // Just create another AdStackLoadTopStmt
-          stmt->set_operand(i, stmt->insert_before_me(op->clone()));
-        } else if (op->is<AdStackAllocaStmt>()) {
+          // Note: Recompute the index of the stack
+
+          // Record the stack load top in forward and replace them using local load - local store after backup ssa
+          stack_load_top_in_forward.insert(op);
+
+          auto stack = op->as<AdStackLoadTopStmt>()->stack;
+
+          auto stack_indices_stmts = stack_indices[stack].first;
+          int cnt = stack_indices[stack].second;
+          auto stack_index = stack_indices_stmts[cnt];
+
+          std::cout << "who is holding stack load top "<< stmt->id << " "<< stmt->type() << " stack " << stack->id << " stack cnt " << cnt << " related index stmt "<< stack_index->id <<  std::endl;
+
+          if (running_stack_index){
+            stack_index = stmt->insert_before_me(std::move(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index, running_stack_index)));
+            stmt->set_operand(i, stack_index);
+          }
+
+          auto cloned_stmt = op->clone();
+          cloned_stmt->as<AdStackLoadTopStmt>()->index = stack_index;
+          stmt->set_operand(i, stmt->insert_before_me(std::move(cloned_stmt)));
+        } else if (op->is<AdStackPushStmt>()){
+          // keep track of the history of stack indices
+          // if(!running_stack_index){
+          //   auto stack = op->as<AdStackPushStmt>()->stack;
+          //   stack_indices[stack].second++;
+          // }
+          // std::cout << "recovering stmt " << op->id << " " << op->type() << std::endl;
+        }
+        else if (op->is<AdStackAllocaStmt>()) {
+          // TODO: backup the index for ad stack alloca stmt
+
           // Backup AdStackAllocaStmt because it should not be local stored and
           // local loaded
           auto stack_alloca = op->as<AdStackAllocaStmt>();
@@ -2213,7 +2418,30 @@ class BackupSSA : public BasicStmtVisitor {
   }
 
   void visit(Stmt *stmt) override {
+    
+    if (stmt->is<AdStackPushStmt>()){
+        // keep track of the history of stack indices
+        if(!running_stack_index){
+          auto stack = stmt->as<AdStackPushStmt>()->stack;
+          stack_indices[stack].second++;
+        }
+        int cnt = stack_indices[stmt->as<AdStackPushStmt>()->stack].second;
+        auto si = stack_indices[stmt->as<AdStackPushStmt>()->stack].first;
+        std::cout << "recovering stmt " << stmt->id << " " << stmt->type() << " size " << si.size() << " cnt " << cnt << " related stack index " << si[cnt]->id <<  std::endl;
+    }
+
+    if (stmt->is<AdStackLoadTopAdjStmt>()){
+        // keep track of the history of stack indices
+        if(!running_stack_index){
+          auto stack = stmt->as<AdStackLoadTopAdjStmt>()->stack;
+          stack_indices[stack].second++;
+        }
+        int cnt = stack_indices[stmt->as<AdStackLoadTopAdjStmt>()->stack].second;
+        auto si = stack_indices[stmt->as<AdStackLoadTopAdjStmt>()->stack].first;
+        std::cout << "recovering stmt " << stmt->id << " " << stmt->type() << " size " << si.size() << " cnt " << cnt << " related stack index " << si[cnt]->id <<  std::endl;
+    }
     generic_visit(stmt);
+
   }
 
   void visit(IfStmt *stmt) override {
@@ -2223,7 +2451,30 @@ class BackupSSA : public BasicStmtVisitor {
 
   // TODO: test operands for statements
   void visit(RangeForStmt *stmt) override {
+
+    ////////////////////////////////////////////
+    auto current_loop_index = stmt->body->insert(VecStatement(std::move(Stmt::make<LoopIndexStmt>(stmt, 0))), 0);
+    Stmt *stack_index_before = nullptr;
+    if (running_stack_index){
+      Stmt* range = nullptr;
+      // if(!stmt->reversed){
+      //   range = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stmt->end, stmt->begin));
+      // }else{
+      //   range = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stmt->begin, stmt->end));
+      // }
+      range = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stmt->end, stmt->begin));
+      stack_index_before = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::mul, running_stack_index, range));
+      running_stack_index = current_loop_index->insert_after_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index_before, current_loop_index));
+    }else{
+      running_stack_index = current_loop_index;
+    }
+    ////////////////////////////////////////////
+
     stmt->body->accept(this);
+
+    ////////////////////////////////////////////
+    running_stack_index = stack_index_before;
+    ////////////////////////////////////////////
   }
 
   void visit(StructForStmt *stmt) override {
@@ -2246,10 +2497,21 @@ class BackupSSA : public BasicStmtVisitor {
     }
   }
 
+  void replace_stack_load_top(){
+    for(auto stmt:stack_load_top_in_forward){
+        // auto stack = stmt->as<AdStackLoadTopStmt>->stack;
+        std::cout << "stack load top in forward " << stmt->id << std::endl;
+        auto alloca = load(stmt);
+        auto local_load = Stmt::make<LocalLoadStmt>(alloca);
+        stmt->replace_with(std::move(local_load));
+    }
+  }
+
  public:
   static void run(Block *block) {
     BackupSSA pass(block);
     block->accept(&pass);
+    // pass.replace_stack_load_top();
   }
 };
 
@@ -2318,11 +2580,30 @@ $tmp = mul b3, b2             -->  $tmp = mul $b3, $b2             --> $15 = mul
 $y = mul $tmp, $x             -->  $y = mul $tmp, $x               --> $14 = mul($y_adj, $x)
 */
 // clang-format on
+
+
+std::function<void(const std::string &)>
+make_pass_printer(bool verbose, const std::string &kernel_name, IRNode *ir) {
+  if (!verbose) {
+    return [](const std::string &) {};
+  }
+  return [ir, kernel_name](const std::string &pass) {
+    TI_INFO("[{}] {}:", kernel_name, pass);
+    std::cout << std::flush;
+    irpass::re_id(ir);
+    irpass::print(ir);
+    std::cout << std::flush;
+  };
+}
+
+
 void auto_diff(IRNode *root,
                const CompileConfig &config,
                AutodiffMode autodiff_mode,
                bool use_stack) {
   TI_AUTO_PROF;
+  auto print = make_pass_printer(true, "Ad debug", root);
+
   if (autodiff_mode == AutodiffMode::kReverse) {
     RegulateTensorTypedStatements::run(root);
     if (use_stack) {
@@ -2333,11 +2614,14 @@ void auto_diff(IRNode *root,
         PromoteSSA2LocalVar::run(ib);
         ReplaceLocalVarWithStacks replace(config.ad_stack_size);
         ib->accept(&replace);
+        print("after replace");
         type_check(root, config);
 
         MakeAdjoint::run(ib);
+        print("after adjoint");
         type_check(root, config);
         BackupSSA::run(ib);
+        print("after backup ssa");
         irpass::analysis::verify(root);
       }
     } else {

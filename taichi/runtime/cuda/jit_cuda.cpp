@@ -181,6 +181,7 @@ std::string JITSessionCUDA::compile_module_to_ptx(
   b.Inliner = createFunctionInliningPass(b.OptLevel, 0, false);
   b.LoopVectorize = false;
   b.SLPVectorize = false;
+  b.DisableUnrollLoops = true;
 
   target_machine->adjustPassManager(b);
 

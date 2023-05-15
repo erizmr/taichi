@@ -1699,14 +1699,16 @@ class AdStackAllocaStmt : public Stmt {
 class AdStackLoadTopStmt : public Stmt, public ir_traits::Load {
  public:
   Stmt *stack;
+  Stmt *index;
 
   // return the pointer to the top element instead of the stack, instead of
   // loading the value
   bool return_ptr = false;
 
-  explicit AdStackLoadTopStmt(Stmt *stack, bool return_ptr = false) {
+  explicit AdStackLoadTopStmt(Stmt *stack, Stmt *index, bool return_ptr = false) {
     TI_ASSERT(stack->is<AdStackAllocaStmt>());
     this->stack = stack;
+    this->index = index;
     this->return_ptr = return_ptr;
     TI_STMT_REG_FIELDS;
   }
@@ -1724,7 +1726,7 @@ class AdStackLoadTopStmt : public Stmt, public ir_traits::Load {
     return stack;
   }
 
-  TI_STMT_DEF_FIELDS(ret_type, stack);
+  TI_STMT_DEF_FIELDS(ret_type, stack, index);
   TI_DEFINE_ACCEPT_AND_CLONE
 };
 
@@ -1734,10 +1736,12 @@ class AdStackLoadTopStmt : public Stmt, public ir_traits::Load {
 class AdStackLoadTopAdjStmt : public Stmt, public ir_traits::Load {
  public:
   Stmt *stack;
+  Stmt *index;
 
-  explicit AdStackLoadTopAdjStmt(Stmt *stack) {
+  explicit AdStackLoadTopAdjStmt(Stmt *stack, Stmt *index) {
     TI_ASSERT(stack->is<AdStackAllocaStmt>());
     this->stack = stack;
+    this->index = index;
     TI_STMT_REG_FIELDS;
   }
 
@@ -1754,7 +1758,7 @@ class AdStackLoadTopAdjStmt : public Stmt, public ir_traits::Load {
     return stack;
   }
 
-  TI_STMT_DEF_FIELDS(ret_type, stack);
+  TI_STMT_DEF_FIELDS(ret_type, stack, index);
   TI_DEFINE_ACCEPT_AND_CLONE
 };
 
@@ -1792,11 +1796,13 @@ class AdStackPushStmt : public Stmt, public ir_traits::Load {
  public:
   Stmt *stack;
   Stmt *v;
+  Stmt *index;
 
-  AdStackPushStmt(Stmt *stack, Stmt *v) {
+  AdStackPushStmt(Stmt *stack, Stmt *v, Stmt *index) {
     TI_ASSERT(stack->is<AdStackAllocaStmt>());
     this->stack = stack;
     this->v = v;
+    this->index = index;
     TI_STMT_REG_FIELDS;
   }
 
@@ -1809,7 +1815,7 @@ class AdStackPushStmt : public Stmt, public ir_traits::Load {
   // Mark has_global_side_effect == true to prevent being moved out of an if
   // clause in the simplify pass for now.
 
-  TI_STMT_DEF_FIELDS(ret_type, stack, v);
+  TI_STMT_DEF_FIELDS(ret_type, stack, v, index);
   TI_DEFINE_ACCEPT_AND_CLONE
 };
 
@@ -1821,11 +1827,13 @@ class AdStackAccAdjointStmt : public Stmt, public ir_traits::Load {
  public:
   Stmt *stack;
   Stmt *v;
+  Stmt *index;
 
-  AdStackAccAdjointStmt(Stmt *stack, Stmt *v) {
+  AdStackAccAdjointStmt(Stmt *stack, Stmt *v, Stmt *index) {
     TI_ASSERT(stack->is<AdStackAllocaStmt>());
     this->stack = stack;
     this->v = v;
+    this->index = index;
     TI_STMT_REG_FIELDS;
   }
 
@@ -1837,7 +1845,7 @@ class AdStackAccAdjointStmt : public Stmt, public ir_traits::Load {
   // Mark has_global_side_effect == true to prevent being moved out of an if
   // clause in the simplify pass for now.
 
-  TI_STMT_DEF_FIELDS(ret_type, stack, v);
+  TI_STMT_DEF_FIELDS(ret_type, stack, v, index);
   TI_DEFINE_ACCEPT_AND_CLONE
 };
 
