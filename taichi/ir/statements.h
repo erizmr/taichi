@@ -1674,11 +1674,12 @@ class AdStackAllocaStmt : public Stmt {
   }
 
   std::size_t entry_size_in_bytes() const {
-    return element_size_in_bytes() * 2;
+    // return element_size_in_bytes() * 2;
+    return element_size_in_bytes();
   }
 
   std::size_t size_in_bytes() const {
-    return sizeof(int32) + entry_size_in_bytes() * max_size;
+    return sizeof(int32) + entry_size_in_bytes() * (max_size + 1);
   }
 
   bool has_global_side_effect() const override {

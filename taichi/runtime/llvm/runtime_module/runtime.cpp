@@ -1851,9 +1851,9 @@ Ptr stack_top_adjoint(Ptr stack, std::size_t element_size) {
   return stack_top_primal(stack, element_size) + element_size;
 }
 
-void stack_init(Ptr stack) {
-  *(u64 *)stack = 0;
-}
+// void stack_init(Ptr stack) {
+//   *(u64 *)stack = 0;
+// }
 
 void stack_pop(Ptr stack) {
   auto &n = *(u64 *)stack;
@@ -1867,18 +1867,30 @@ void stack_push(Ptr stack, size_t max_num_elements, std::size_t element_size) {
   std::memset(stack_top_primal(stack, element_size), 0, element_size * 2);
 }
 
+void stack_init(Ptr stack, std::size_t element_size) {
+  *(u64 *)stack = 0;
+  std::memset(stack + sizeof(u64), 0, element_size);
+}
 
 Ptr stack_get_primal_index(Ptr stack, std::size_t element_size, std::uint32_t index) {
-  return stack + sizeof(u64) + (index - 1) * 2 * element_size;
+  // return stack + sizeof(u64) + (index - 1) * 2 * element_size;
+  return stack + sizeof(u64) + element_size + index * element_size;
 }
 
 Ptr stack_get_adjoint_index(Ptr stack, std::size_t element_size, std::uint32_t index) {
-  return stack_get_primal_index(stack, element_size, index) + element_size;
+  // return stack_get_primal_index(stack, element_size, index) + element_size;
+  return stack + sizeof(u64);
 }
 
 void set_default_values(Ptr stack, size_t max_num_elements, std::size_t element_size, std::uint32_t index) {
   // TODO: assert n <= max_elements
-  std::memset(stack_get_primal_index(stack, element_size, index), 0, element_size * 2);
+  // std::memset(stack_get_primal_index(stack, element_size, index), 0, element_size * 2);
+
+  std::memset(stack_get_primal_index(stack, element_size, index), 0, element_size);
+}
+
+void reset_adjoint_default_value(Ptr stack, std::size_t element_size) {
+  std::memset(stack + sizeof(u64), 0, element_size);
 }
 
 #include "internal_functions.h"

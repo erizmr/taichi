@@ -2409,7 +2409,8 @@ void TaskCodeGenLLVM::visit(AdStackAllocaStmt *stmt) {
   auto alloca = create_entry_block_alloca(type, sizeof(int64));
   llvm_val[stmt] = builder->CreateBitCast(
       alloca, llvm::PointerType::getInt8PtrTy(*llvm_context));
-  call("stack_init", llvm_val[stmt]);
+  // call("stack_init", llvm_val[stmt]);
+  call("stack_init", llvm_val[stmt], tlctx->get_constant(stmt->element_size_in_bytes()));
 }
 
 void TaskCodeGenLLVM::visit(AdStackPopStmt *stmt) {
@@ -2457,6 +2458,7 @@ void TaskCodeGenLLVM::visit(AdStackLoadTopAdjStmt *stmt) {
   adjoint_ptr =
       builder->CreateBitCast(adjoint_ptr, llvm::PointerType::get(adjoint_ty, 0));
   llvm_val[stmt] = builder->CreateLoad(adjoint_ty, adjoint_ptr);
+  call("reset_adjoint_default_value", llvm_val[stack], tlctx->get_constant(stack->element_size_in_bytes()));
 }
 
 void TaskCodeGenLLVM::visit(AdStackAccAdjointStmt *stmt) {
