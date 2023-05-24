@@ -43,18 +43,21 @@ Stmt *insert_const(const DataType &dtype,
 // The history of the stack indices outside the loop is tracked for backup ssa use
 std::map<Stmt*, std::pair<std::vector<Stmt*>, int>> stack_indices;
 std::set<Stmt*> stack_load_top_in_forward;
+std::map<Stmt*, Stmt*> last_push_index;
 
 Stmt* get_stack_index(Stmt* stmt, Stmt* running_stack_index) {
   Stmt* stack = nullptr;
   Stmt* stack_index = nullptr;
   if (stmt->is<LocalLoadStmt>()){
-    std::cout << "????"<< std::endl;
+    // std::cout << "????"<< std::endl;
     stack = stmt->as<LocalLoadStmt>()->src;
+    
+    auto stack_indices_stmts = stack_indices[stack].first;
+    int cnt = stack_indices[stack].second;
+    TI_ASSERT(cnt < stack_indices_stmts.size());
+    stack_index = stack_indices_stmts[cnt];
+
     if (running_stack_index){
-      auto stack_indices_stmts = stack_indices[stack].first;
-      int cnt = stack_indices[stack].second;
-      TI_ASSERT(cnt < stack_indices_stmts.size());
-      auto stack_index = stack_indices_stmts[cnt];
       auto ret = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index, running_stack_index));
       return ret;
     }
@@ -97,6 +100,7 @@ Stmt* get_stack_index(Stmt* stmt, Stmt* running_stack_index) {
     // stack_indices[stack] = stmt->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, stack_indices[stack], one_index));
     // stack_index = stack_indices[stack];
   }
+  // std::cout << " what stmt trigger assert stack index "<< stmt->type() << " "<< stmt->id << std::endl;
   TI_ASSERT(stack_index);
   return stack_index;
 }
@@ -402,8 +406,22 @@ class PromoteSSA2LocalVar : public BasicStmtVisitor {
   void visit(Stmt *stmt) override {
     if (execute_once_)
       return;
-    if (!(stmt->is<UnaryOpStmt>() || stmt->is<BinaryOpStmt>() ||
-          stmt->is<TernaryOpStmt>() || stmt->is<GlobalLoadStmt>() ||
+    // if (!(stmt->is<UnaryOpStmt>() || stmt->is<BinaryOpStmt>() ||
+    //       stmt->is<TernaryOpStmt>() || stmt->is<GlobalLoadStmt>() ||
+    //       stmt->is<AllocaStmt>())) {
+    //   // TODO: this list may be incomplete
+    //   return;
+    // }
+
+    // if (!(stmt->is<UnaryOpStmt>() || stmt->is<BinaryOpStmt>() ||
+    //       stmt->is<TernaryOpStmt>() || (stmt->is<GlobalLoadStmt>() && gradient_dst_.find(stmt) == gradient_dst_.end()) ||
+    //       stmt->is<AllocaStmt>())) {
+    //   // TODO: this list may be incomplete
+    //   return;
+    // }
+
+
+    if (!((stmt->is<GlobalLoadStmt>() && gradient_dst_.find(stmt) == gradient_dst_.end()) ||
           stmt->is<AllocaStmt>())) {
       // TODO: this list may be incomplete
       return;
@@ -451,10 +469,14 @@ class PromoteSSA2LocalVar : public BasicStmtVisitor {
  private:
   Block *alloca_block_{nullptr};
   bool execute_once_;
+  std::set<Stmt*> gradient_dst_;
 
  public:
-  static void run(Block *block) {
+  static void run(Block *block, std::set<Stmt*>& gradient_dst) {
     PromoteSSA2LocalVar pass(block);
+    for (auto item:gradient_dst){
+      pass.gradient_dst_.insert(item);
+    }
     block->accept(&pass);
   }
 };
@@ -475,9 +497,9 @@ class AdStackAllocaJudger : public BasicStmtVisitor {
   void visit(LocalStoreStmt *stmt) override {
     if (stmt->dest == target_alloca_backup_)
       load_only_ = false;
-    if (local_loaded_ && stmt->dest == target_alloca_backup_) {
-      is_stack_needed_ = true;
-    }
+    // if (local_loaded_ && stmt->dest == target_alloca_backup_) {
+    //   is_stack_needed_ = true;
+    // }
   }
 
   // Check if the alloca is load only
@@ -564,7 +586,9 @@ class AdStackAllocaJudger : public BasicStmtVisitor {
     judger.target_alloca_ = target_alloca;
     judger.target_alloca_backup_ = target_alloca;
     target_alloca->parent->accept(&judger);
+    std::cout << "alloca "<< target_alloca->id << " " << " not load only " << !judger.load_only_ << " is stack needed "<< judger.is_stack_needed_ << std::endl;
     return (!judger.load_only_) && judger.is_stack_needed_;
+    // return judger.is_stack_needed_;
   }
 
  private:
@@ -574,6 +598,352 @@ class AdStackAllocaJudger : public BasicStmtVisitor {
   bool local_loaded_ = false;
   bool load_only_ = true;
 };
+
+
+class CollectGradSrcDst : public BasicStmtVisitor {
+ public:
+  using BasicStmtVisitor::visit;
+
+  void visit(GlobalLoadStmt *stmt) override {
+    if (stmt->src->is<GlobalPtrStmt>()){
+      GlobalPtrStmt *src = stmt->src->as<GlobalPtrStmt>();
+      auto snode = src->snode;
+      if (snode->has_adjoint()) {
+        std::cout << " Global load " << stmt->id << std::endl;
+        gradient_dst_.insert(stmt);
+        if (!execute_once_) gradient_dst_inside_loop_.insert(stmt);
+      }
+    }
+  }
+
+  void visit(GlobalStoreStmt *stmt) override {
+    if (stmt->dest->is<GlobalPtrStmt>()){
+      GlobalPtrStmt *dest = stmt->dest->as<GlobalPtrStmt>();
+      auto snode = dest->snode;
+      if (snode->has_adjoint()) {
+        std::cout << " Global store " << stmt->id << std::endl;
+        gradient_src_.insert(stmt);
+      }
+    }
+  }
+
+  void visit(AtomicOpStmt *stmt) override {
+    if (stmt->dest->is<GlobalPtrStmt>()){
+      GlobalPtrStmt *dest = stmt->dest->as<GlobalPtrStmt>();
+      auto snode = dest->snode;
+      if (snode->has_adjoint()) {
+        std::cout << " Atomic add " << stmt->id << std::endl;
+        gradient_src_.insert(stmt);
+      }
+    }
+    
+    if (stmt->dest->is<AllocaStmt>()){
+      // std::cout << <<std::endl;
+      alloca_path_[stmt->dest].push_back(stmt);
+    }
+
+  }
+
+  void visit(LocalStoreStmt *stmt) override {
+    if (stmt->dest->is<AllocaStmt>()){
+      alloca_path_[stmt->dest].push_back(stmt);
+    }
+  }
+
+  void visit(RangeForStmt *stmt) override {
+    auto old_execute_once = execute_once_;
+    execute_once_ = false;
+    stmt->body->accept(this);
+    execute_once_ = old_execute_once;
+  }
+
+  void run(Block *blk, std::set<Stmt*>& gradient_src, std::set<Stmt*>& gradient_dst, std::set<Stmt*>& gradient_dst_inside_loop, std::map<Stmt*, std::vector<Stmt*>>& alloca_path) {
+    CollectGradSrcDst pass;
+    blk->accept(&pass);
+    for (auto item:pass.gradient_src_){
+      gradient_src.insert(item);
+    }
+    for (auto item:pass.gradient_dst_){
+      gradient_dst.insert(item);
+    }
+
+    for (auto item:pass.gradient_dst_inside_loop_){
+      gradient_dst_inside_loop.insert(item);
+    }
+
+    for (auto item:pass.alloca_path_){
+      for (auto item2:item.second){
+        alloca_path[item.first].push_back(item2);
+      }
+    }
+  }
+
+ private:
+  bool execute_once_;
+  std::set<Stmt*> gradient_src_;
+  std::set<Stmt*> gradient_dst_;
+  std::set<Stmt*> gradient_dst_inside_loop_;
+  std::map<Stmt*, std::vector<Stmt*>> alloca_path_;
+};
+
+
+class DifferentiationChainAnalysis: public BasicStmtVisitor {
+ public:
+  using BasicStmtVisitor::visit;
+
+  explicit DifferentiationChainAnalysis(Block *block) {
+    invoke_default_visitor = true;
+    execute_once_ = true;
+  }
+
+  bool search(Stmt *stmt) {
+    
+    if (visited_.find(stmt) != visited_.end()){
+      return visited_[stmt];
+    }
+
+    // TODO: identify whether the cycle should or not allocate a stack
+    if (current_trace_history_.find(stmt) != current_trace_history_.end()){
+      std::cout << "[cycle] stmt "<< stmt->id << " visited " << std::endl;
+      return true;
+      // return false;
+    }else{
+      current_trace_history_.insert(stmt);
+    }
+
+    bool ret = false;
+    std::cout << "stmt in search "<< stmt->id << " "<< stmt->type()<< std::endl;
+    if (stmt->is<ConstStmt>()){
+      ret = false;
+    }else if (stmt->is<GlobalLoadStmt>()){
+      
+      std::cout << "reach global load "<< stmt->id << " "<< stmt->type() << " in dst? " << (gradient_dst_.find(stmt) != gradient_dst_.end()) << " execute once? "<< (gradient_dst_inside_loop_.find(stmt) != gradient_dst_inside_loop_.end()) << std::endl;
+      // if (gradient_dst_.find(stmt) != gradient_dst_.end() && !execute_once_)
+      if (gradient_dst_.find(stmt) != gradient_dst_.end() && gradient_dst_inside_loop_.find(stmt) != gradient_dst_inside_loop_.end())
+        ret = true;
+      else
+        ret = false;
+    }else if (stmt->is<AllocaStmt>()){
+      if (stack_needed_.find(stmt) != stack_needed_.end()){
+        return true; 
+      }else if (stack_noneed_.find(stmt) != stack_noneed_.end()){
+        return false;
+      }else{
+        std::cout << "alloca stmt in searach "<< stmt->id <<  " branch " << alloca_path_[stmt].size()<<  std::endl;
+        for(const auto item:alloca_path_[stmt]){
+          std::cout << "------branch " << item->id << " " << item->type() << std::endl; 
+          if(search(item)){
+            std::cout << "!!!------branch " << item->id << " " << item->type() << " alloc " << stmt->id << " accept "<< std::endl; 
+            stack_needed_.insert(stmt);
+            return true;
+          }
+        }
+        std::cout << "alloca stmt in searach "<< stmt->id <<  " reject " <<  std::endl;
+        stack_noneed_.insert(stmt);
+        return false;
+      }
+    }else if (stmt->is<GlobalStoreStmt>()){
+      ret = search(stmt->as<GlobalStoreStmt>()->val);
+    }else if (stmt->is<AtomicOpStmt>()){
+      ret = search(stmt->as<AtomicOpStmt>()->val);
+    }else if (stmt->is<LocalStoreStmt>()){
+      ret = search(stmt->as<LocalStoreStmt>()->val);
+    }else if (stmt->is<LocalLoadStmt>()){
+      ret = search(stmt->as<LocalLoadStmt>()->src);
+    }else if (stmt->is<UnaryOpStmt>()){
+      if (NonLinearOps::unary_collections.find(stmt->as<UnaryOpStmt>()->op_type) !=
+        NonLinearOps::unary_collections.end()){
+        involved_in_nonlinear_stmts_.insert(stmt->as<UnaryOpStmt>()->operand);
+      }
+      ret = search(stmt->as<UnaryOpStmt>()->operand);
+    }else if (stmt->is<BinaryOpStmt>()){
+      if (NonLinearOps::binary_collections.find(stmt->as<BinaryOpStmt>()->op_type) !=
+        NonLinearOps::binary_collections.end()){
+        involved_in_nonlinear_stmts_.insert(stmt->as<BinaryOpStmt>()->lhs);
+        involved_in_nonlinear_stmts_.insert(stmt->as<BinaryOpStmt>()->rhs);
+      }
+      bool ret1 = search(stmt->as<BinaryOpStmt>()->lhs);
+      bool ret2 = search(stmt->as<BinaryOpStmt>()->rhs);
+      ret = ret1 || ret2;
+    }else if (stmt->is<TernaryOpStmt>()){
+      if (NonLinearOps::ternary_collections.find(stmt->as<TernaryOpStmt>()->op_type) !=
+        NonLinearOps::ternary_collections.end()){
+        involved_in_nonlinear_stmts_.insert(stmt->as<TernaryOpStmt>()->op1);
+        involved_in_nonlinear_stmts_.insert(stmt->as<TernaryOpStmt>()->op2);
+        involved_in_nonlinear_stmts_.insert(stmt->as<TernaryOpStmt>()->op3);
+      }
+      bool ret1 = search(stmt->as<TernaryOpStmt>()->op1);
+      bool ret2 = search(stmt->as<TernaryOpStmt>()->op2);
+      bool ret3 = search(stmt->as<TernaryOpStmt>()->op3);
+
+      ret = ret1 || ret2 || ret3;
+    }
+    visited_[stmt] = ret;
+    return ret;
+  }
+
+  void visit(Stmt* stmt){
+    
+    if (stmt == current_grad_src_) {
+      current_trace_history_.clear();
+      std::cout << "what is current stmt "<< stmt->id << " " << stmt->type() << " is execute once " << execute_once_ << std::endl;
+      search(stmt);
+    }
+  }
+
+  void visit(RangeForStmt *stmt) override {
+    auto old_execute_once = execute_once_;
+    execute_once_ = false;  // loop body may be executed many times
+    stmt->body->accept(this);
+    execute_once_ = old_execute_once;
+  }
+
+  void visit(IfStmt *stmt) override {
+    if (stmt->true_statements)
+      stmt->true_statements->accept(this);
+    if (stmt->false_statements)
+      stmt->false_statements->accept(this);
+    search_alloca_if_cond(stmt->cond);
+  }
+
+  // TODO: Hack for if cond, enforce that if cond requries a stack
+  void search_alloca_if_cond(Stmt* stmt){
+    if(stmt->is<AllocaStmt>()){
+      stack_needed_.insert(stmt);
+      involved_in_nonlinear_allocas_.insert(stmt);
+      return;
+    }
+    if(stmt->is<UnaryOpStmt>()){
+      search_alloca_if_cond(stmt->as<UnaryOpStmt>()->operand);
+    }
+    if(stmt->is<BinaryOpStmt>()){
+      search_alloca_if_cond(stmt->as<BinaryOpStmt>()->lhs);
+      search_alloca_if_cond(stmt->as<BinaryOpStmt>()->rhs);
+    }
+    if(stmt->is<TernaryOpStmt>()){
+      search_alloca_if_cond(stmt->as<TernaryOpStmt>()->op1);
+      search_alloca_if_cond(stmt->as<TernaryOpStmt>()->op2);
+      search_alloca_if_cond(stmt->as<TernaryOpStmt>()->op3);
+    }
+    if(stmt->is<LocalLoadStmt>()){
+      search_alloca_if_cond(stmt->as<LocalLoadStmt>()->src);
+    }
+    if(stmt->is<LocalStoreStmt>()){
+       search_alloca_if_cond(stmt->as<LocalStoreStmt>()->val);
+    }
+  }
+
+  void search_alloca(Stmt* stmt){
+    if(stmt->is<AllocaStmt>()){
+      involved_in_nonlinear_allocas_.insert(stmt);
+      return;
+    }
+    if(stmt->is<UnaryOpStmt>()){
+      search_alloca(stmt->as<UnaryOpStmt>()->operand);
+    }
+    if(stmt->is<BinaryOpStmt>()){
+      search_alloca(stmt->as<BinaryOpStmt>()->lhs);
+      search_alloca(stmt->as<BinaryOpStmt>()->rhs);
+    }
+    if(stmt->is<TernaryOpStmt>()){
+      search_alloca(stmt->as<TernaryOpStmt>()->op1);
+      search_alloca(stmt->as<TernaryOpStmt>()->op2);
+      search_alloca(stmt->as<TernaryOpStmt>()->op3);
+    }
+    if(stmt->is<LocalLoadStmt>()){
+      search_alloca(stmt->as<LocalLoadStmt>()->src);
+    }
+    if(stmt->is<LocalStoreStmt>()){
+       search_alloca(stmt->as<LocalStoreStmt>()->val);
+    }
+  }
+
+  void check_involved_in_nonlinear(){
+    for(const auto item:involved_in_nonlinear_stmts_){
+      std::cout << "check nolinear stmt "<< item->id << " " << item->type() << std::endl;
+      search_alloca(item);
+    }
+  }
+
+ private:
+  bool execute_once_;
+  Stmt* current_grad_src_;
+  std::set<Stmt*> gradient_src_;
+  std::set<Stmt*> gradient_dst_;
+  std::set<Stmt*> gradient_dst_inside_loop_;
+  std::map<Stmt*, std::vector<Stmt*>> alloca_path_;
+  std::set<Stmt*> stack_needed_;
+  std::set<Stmt*> stack_noneed_;
+  std::set<Stmt*> involved_in_nonlinear_stmts_;
+  std::set<Stmt*> involved_in_nonlinear_allocas_;
+  std::map<Stmt*, bool> visited_;
+  std::set<Stmt*> current_trace_history_;
+
+ public:
+  static void run(IRNode *root, std::set<Stmt*>& gradient_src, std::set<Stmt*>& gradient_dst, std::set<Stmt*>& gradient_dst_inside_loop, std::map<Stmt*, std::vector<Stmt*>>& alloca_path, std::set<Stmt*>& stack_needed) {
+    auto block = root->as<Block>();
+    DifferentiationChainAnalysis pass(block);
+
+    for (auto item:gradient_src){
+      pass.gradient_src_.insert(item);
+    }
+    for (auto item:gradient_dst){
+      pass.gradient_dst_.insert(item);
+    }
+    for (auto item:gradient_dst_inside_loop){
+      pass.gradient_dst_inside_loop_.insert(item);
+    }
+    for (auto item:alloca_path){
+      for (auto item2:item.second){
+        pass.alloca_path_[item.first].push_back(item2);
+      }
+    }
+
+    TI_ASSERT(pass.stack_needed_.size() == 0);
+    TI_ASSERT(pass.stack_noneed_.size() == 0);
+    std::cout << "before fill stack set " << pass.stack_needed_.size() << " " << pass.stack_noneed_.size() << std::endl;
+    for (const auto item:gradient_src){
+      std::cout << "current grad src "<< item->id << " " << item->type() << std::endl;
+      pass.current_grad_src_ = item;
+      block->accept(&pass);
+    }
+
+    for(const auto item:pass.stack_needed_){
+      std::cout << "before nonlinear remove: stack needed alloca id "<< item->id << " " << item->type() << std::endl;
+    }
+
+    for(const auto item:pass.stack_noneed_){
+      std::cout << "before nonlinear remove: stack no need alloca id "<< item->id << " " << item->type() << std::endl;
+    }
+
+    pass.check_involved_in_nonlinear();
+    std::vector<Stmt*> to_remove;
+    for(auto item:pass.stack_needed_){
+      if (pass.involved_in_nonlinear_allocas_.find(item) == pass.involved_in_nonlinear_allocas_.end()){
+         to_remove.push_back(item);
+      }
+    }
+    for(auto item:to_remove){
+      pass.stack_needed_.erase(item);
+      pass.stack_noneed_.insert(item);
+    }
+
+    for(const auto item:pass.stack_needed_){
+      std::cout << "stack needed alloca id "<< item->id << " " << item->type() << std::endl;
+    }
+
+    for(const auto item:pass.stack_noneed_){
+      std::cout << "stack no need alloca id "<< item->id << " " << item->type() << std::endl;
+    }
+
+    for(auto item:pass.stack_needed_){
+      stack_needed.insert(item);
+    }
+    
+  }
+};
+
+
 
 class RegulateTensorTypedStatements : public BasicStmtVisitor {
  public:
@@ -756,9 +1126,13 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
   int ad_stack_size;
   Stmt *running_stack_index{nullptr};
   DelayedIRModifier delayed_modifier_;
+  std::set<Stmt*> stack_needed_;
 
-  explicit ReplaceLocalVarWithStacks(int ad_stack_size)
+  explicit ReplaceLocalVarWithStacks(int ad_stack_size, std::set<Stmt*> &stack_needed)
       : ad_stack_size(ad_stack_size) {
+        for(auto item:stack_needed){
+          stack_needed_.insert(item);
+        }
   }
 
   void visit(RangeForStmt *stmt) override {
@@ -783,7 +1157,8 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
 
 
   void visit(AllocaStmt *alloc) override {
-    bool is_stack_needed = AdStackAllocaJudger::run(alloc);
+    // bool is_stack_needed_old = AdStackAllocaJudger::run(alloc);
+    bool is_stack_needed = (stack_needed_.find(alloc) != stack_needed_.end());
     if (is_stack_needed) {
       auto dtype = alloc->ret_type;
       auto stack_alloca = Stmt::make<AdStackAllocaStmt>(dtype, ad_stack_size);
@@ -806,10 +1181,23 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
   }
 
   void visit(LocalLoadStmt *stmt) override {
-    if (stmt->src->is<AdStackAllocaStmt>()) {
-      auto stack_load = Stmt::make<AdStackLoadTopStmt>(stmt->src, get_stack_index(stmt, running_stack_index));
-      stack_load->ret_type = stmt->ret_type;
+    // if (stmt->src->is<AdStackAllocaStmt>()) {
+    //   auto stack_load = Stmt::make<AdStackLoadTopStmt>(stmt->src, get_stack_index(stmt, running_stack_index));
+    //   stack_load->ret_type = stmt->ret_type;
 
+    //   stmt->replace_with(std::move(stack_load));
+    // }
+
+    if (stmt->src->is<AdStackAllocaStmt>()){
+      Stmt* index = nullptr;
+      if (last_push_index.find(stmt->src) != last_push_index.end()){
+        index = last_push_index[stmt->src];
+      }else{
+        index = get_stack_index(stmt, running_stack_index);
+        // index = get_stack_index(stmt, running_stack_index);
+      }
+      auto stack_load = Stmt::make<AdStackLoadTopStmt>(stmt->src, index);
+      stack_load->ret_type = stmt->ret_type;
       stmt->replace_with(std::move(stack_load));
     }
   }
@@ -968,7 +1356,9 @@ class ReplaceLocalVarWithStacks : public BasicStmtVisitor {
 
     // Non Tensor-type
     if (stmt->dest->is<AdStackAllocaStmt>()){
-      stmt->replace_with(Stmt::make<AdStackPushStmt>(stmt->dest, stmt->val, get_stack_index(stmt, running_stack_index)));
+      auto index = get_stack_index(stmt, running_stack_index);
+      stmt->replace_with(Stmt::make<AdStackPushStmt>(stmt->dest, stmt->val, index));
+      if (running_stack_index) last_push_index[stmt->dest] = index;
     }
   }
 
@@ -1529,20 +1919,20 @@ class MakeAdjoint : public ADTransform {
     // Compute stack index if needed
     auto current_loop_index = new_for_ptr->body->insert(VecStatement(std::move(Stmt::make<LoopIndexStmt>(new_for_ptr, 0))), 0);
     Stmt *stack_index_before = nullptr;
-    if (running_stack_index){
-      Stmt* range = nullptr;
-      // if(!new_for_ptr->reversed){
-      //   range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->end, new_for_ptr->begin));
-      // }else{
-      //   range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->begin, new_for_ptr->end));
-      // }
-      range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->end, new_for_ptr->begin));
-      stack_index_before = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::mul, running_stack_index, range));
-      running_stack_index = current_loop_index->insert_after_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index_before, current_loop_index));
-    }else{
-      running_stack_index = current_loop_index;
-    }
-    //////////////////////////////////////////
+    // if (running_stack_index){
+    //   Stmt* range = nullptr;
+    //   // if(!new_for_ptr->reversed){
+    //   //   range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->end, new_for_ptr->begin));
+    //   // }else{
+    //   //   range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->begin, new_for_ptr->end));
+    //   // }
+    //   range = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::sub, new_for_ptr->end, new_for_ptr->begin));
+    //   stack_index_before = new_for_ptr->insert_before_me(Stmt::make<BinaryOpStmt>(BinaryOpType::mul, running_stack_index, range));
+    //   running_stack_index = current_loop_index->insert_after_me(Stmt::make<BinaryOpStmt>(BinaryOpType::add, stack_index_before, current_loop_index));
+    // }else{
+    //   running_stack_index = current_loop_index;
+    // }
+    // //////////////////////////////////////////
 
 
     std::vector<Stmt *> statements;
@@ -2408,10 +2798,16 @@ class BackupSSA : public BasicStmtVisitor {
           }
         } else if (op->is<ArgLoadStmt>()) {
           stmt->set_operand(i, stmt->insert_before_me(op->clone()));
-        } else {
-          auto alloca = load(op);
-          stmt->set_operand(
-              i, stmt->insert_before_me(Stmt::make<LocalLoadStmt>(alloca)));
+        } 
+        // else {
+        //   auto alloca = load(op);
+        //   stmt->set_operand(
+        //       i, stmt->insert_before_me(Stmt::make<LocalLoadStmt>(alloca)));
+        // }
+         else {
+          auto cloned_stmt = op->clone();
+          stmt->set_operand(i, stmt->insert_before_me(std::move(cloned_stmt)));
+          generic_visit(stmt->operand(i));
         }
       }
     }
@@ -2604,6 +3000,7 @@ void auto_diff(IRNode *root,
   TI_AUTO_PROF;
   auto print = make_pass_printer(true, "Ad debug", root);
 
+
   if (autodiff_mode == AutodiffMode::kReverse) {
     RegulateTensorTypedStatements::run(root);
     if (use_stack) {
@@ -2611,8 +3008,48 @@ void auto_diff(IRNode *root,
       ReverseOuterLoops::run(root, IB);
 
       for (auto ib : IB) {
-        PromoteSSA2LocalVar::run(ib);
-        ReplaceLocalVarWithStacks replace(config.ad_stack_size);
+        print("before collect");
+        std::set<Stmt*> gradient_src;
+        std::set<Stmt*> gradient_dst;
+        std::set<Stmt*> gradient_dst_inside_loop;
+        std::set<Stmt*> stack_needed;
+        std::map<Stmt*, std::vector<Stmt*>> alloca_path;
+
+        CollectGradSrcDst collect_pre_promote;
+        collect_pre_promote.run(ib, gradient_src, gradient_dst, gradient_dst_inside_loop, alloca_path);
+        PromoteSSA2LocalVar::run(ib, gradient_dst);
+        print("after promote");
+
+        gradient_src.clear();
+        gradient_dst.clear();
+        gradient_dst_inside_loop.clear();
+        alloca_path.clear();
+
+
+        CollectGradSrcDst collect;
+        collect.run(ib, gradient_src, gradient_dst, gradient_dst_inside_loop, alloca_path);
+        std::cout << " grad src size " << gradient_src.size() << std::endl;
+        std::cout << " grad dst size " << gradient_dst.size() << std::endl;
+        for(const auto item:gradient_dst){
+          std::cout << " Gradient dst stmt id "<< item->id << " type: "<< item->type() << std::endl;
+        }
+
+        for(const auto item:gradient_src){
+          std::cout << " Gradient src stmt id "<< item->id << " type: "<< item->type() << std::endl;
+        }
+
+        for(const auto item:alloca_path){
+          std::cout << " alloca "<< item.first->id << " type: "<< item.first->type() << std::endl;
+          for(const auto item2:item.second){
+            std::cout << " -------branch recorded "<< item2->id << " type: "<< item2->type() << std::endl;
+          }
+        }
+
+
+
+        DifferentiationChainAnalysis::run(root, gradient_src, gradient_dst, gradient_dst_inside_loop, alloca_path, stack_needed);
+
+        ReplaceLocalVarWithStacks replace(config.ad_stack_size, stack_needed);
         ib->accept(&replace);
         print("after replace");
         type_check(root, config);

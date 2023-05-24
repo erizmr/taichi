@@ -1873,7 +1873,6 @@ void stack_init(Ptr stack, std::size_t element_size) {
 }
 
 Ptr stack_get_primal_index(Ptr stack, std::size_t element_size, std::uint32_t index) {
-  // return stack + sizeof(u64) + (index - 1) * 2 * element_size;
   return stack + sizeof(u64) + element_size + index * element_size;
 }
 
