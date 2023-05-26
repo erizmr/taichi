@@ -33,7 +33,9 @@ void reverse_segments(IRNode *root) {
   bool has_for = false;
   bool has_non_for = false;
   for (auto &&s : block->statements) {
-    if (s->is<FrontendForStmt>()) {
+    // if (s->is<FrontendForStmt>()) {
+    if (s->is<RangeForStmt>() || s->is<StructForStmt>() ||
+        s->is<MeshForStmt>()) {
       has_for = true;
       statement_blocks.emplace_back();
       statement_blocks.back().push_back(std::move(s));
@@ -64,15 +66,15 @@ void reverse_segments(IRNode *root) {
     }
   }
     */
-  if (has_for && has_non_for) {
-    TI_ERROR(
-        "Invalid program input for autodiff: "
-        "Mixed usage of for-loops and statements without looping. \n"
-        "Please split them into two kernels "
-        "and check the documentation for more details:\n"
-        "https://docs.taichi-lang.org/docs/"
-        "differentiable_programming");
-  }
+  // if (has_for && has_non_for) {
+  //   TI_ERROR(
+  //       "Invalid program input for autodiff: "
+  //       "Mixed usage of for-loops and statements without looping. \n"
+  //       "Please split them into two kernels "
+  //       "and check the documentation for more details:\n"
+  //       "https://docs.taichi-lang.org/docs/"
+  //       "differentiable_programming");
+  // }
   for (auto &sblock : statement_blocks) {
     for (auto &&s : sblock) {
       block->statements.push_back(std::move(s));

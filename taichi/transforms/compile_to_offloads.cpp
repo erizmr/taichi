@@ -50,10 +50,10 @@ void compile_to_offloads(IRNode *ir,
     std::cout << std::flush;
   }
 
-  if (autodiff_mode == AutodiffMode::kReverse) {
-    irpass::reverse_segments(ir);
-    print("Segment reversed (for autodiff)");
-  }
+  // if (autodiff_mode == AutodiffMode::kReverse) {
+  //   irpass::reverse_segments(ir);
+  //   print("Segment reversed (for autodiff)");
+  // }
 
   if (start_from_ast) {
     irpass::frontend_type_check(ir);
@@ -104,18 +104,18 @@ void compile_to_offloads(IRNode *ir,
     irpass::analysis::verify(ir);
   }
 
-  if (autodiff_mode == AutodiffMode::kReverse ||
-      autodiff_mode == AutodiffMode::kForward) {
-    // Remove local atomics here so that we don't have to handle their gradients
-    irpass::demote_atomics(ir, config);
+  // if (autodiff_mode == AutodiffMode::kReverse ||
+  //     autodiff_mode == AutodiffMode::kForward) {
+  //   // Remove local atomics here so that we don't have to handle their gradients
+  //   irpass::demote_atomics(ir, config);
 
-    irpass::full_simplify(ir, config, {false, /*autodiff_enabled*/ true});
-    irpass::auto_diff(ir, config, autodiff_mode, ad_use_stack);
-    // TODO: Be carefull with the full_simplify when do high-order autodiff
-    irpass::full_simplify(ir, config, {false, /*autodiff_enabled*/ false});
-    print("Gradient");
-    irpass::analysis::verify(ir);
-  }
+  //   irpass::full_simplify(ir, config, {false, /*autodiff_enabled*/ true});
+  //   irpass::auto_diff(ir, config, autodiff_mode, ad_use_stack);
+  //   // TODO: Be carefull with the full_simplify when do high-order autodiff
+  //   irpass::full_simplify(ir, config, {false, /*autodiff_enabled*/ false});
+  //   print("Gradient");
+  //   irpass::analysis::verify(ir);
+  // }
 
   if (config.check_out_of_bound) {
     irpass::check_out_of_bound(ir, config, {kernel->get_name()});
@@ -131,9 +131,30 @@ void compile_to_offloads(IRNode *ir,
   print("Simplified II");
   irpass::analysis::verify(ir);
 
-  irpass::offload(ir, config);
+
+  if (autodiff_mode == AutodiffMode::kReverse) {
+    irpass::reverse_segments(ir);
+    print("Segment reversed (for autodiff)");
+  }
+
+  std::unordered_map<const Stmt *, std::size_t> local_to_global_offset;
+
+  irpass::offload(ir, config, local_to_global_offset);
   print("Offloaded");
   irpass::analysis::verify(ir);
+
+  if (autodiff_mode == AutodiffMode::kReverse ||
+      autodiff_mode == AutodiffMode::kForward) {
+    // Remove local atomics here so that we don't have to handle their gradients
+    irpass::demote_atomics(ir, config);
+
+    irpass::full_simplify(ir, config, {false, /*autodiff_enabled*/ true});
+    irpass::auto_diff(ir, config, local_to_global_offset, autodiff_mode, ad_use_stack);
+    // TODO: Be carefull with the full_simplify when do high-order autodiff
+    irpass::full_simplify(ir, config, {false, /*autodiff_enabled*/ false});
+    print("Gradient");
+    irpass::analysis::verify(ir);
+  }
 
   // TODO: This pass may be redundant as cfg_optimization() is already called
   //  in full_simplify().

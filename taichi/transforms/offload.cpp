@@ -766,7 +766,7 @@ class AssociateContinueScope : public BasicStmtVisitor {
 
 }  // namespace
 
-void offload(IRNode *root, const CompileConfig &config) {
+void offload(IRNode *root, const CompileConfig &config, std::unordered_map<const Stmt *, std::size_t> &local_to_global_offset_ret) {
   TI_AUTO_PROF;
   auto offloaded_ranges = Offloader::run(root, config);
   type_check(root, config);
@@ -778,6 +778,9 @@ void offload(IRNode *root, const CompileConfig &config) {
     stmt_to_offloaded = StmtToOffloaded::run(root);
     FixCrossOffloadReferences::run(root, config, &local_to_global_offset,
                                    stmt_to_offloaded, &offloaded_ranges);
+    for(auto item:local_to_global_offset){
+      local_to_global_offset_ret[item.first] = item.second;
+    }
   }
   insert_gc(root, config);
   // TODO(k-ye): Move this into its own pass. However, we need to wait for all

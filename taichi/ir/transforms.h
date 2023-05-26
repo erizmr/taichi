@@ -90,6 +90,7 @@ bool lower_access(IRNode *root,
                   const LowerAccessPass::Args &args);
 void auto_diff(IRNode *root,
                const CompileConfig &config,
+               std::unordered_map<const Stmt *, std::size_t> &local_to_global_offset_ret,
                AutodiffMode autodiffMode,
                bool use_stack = false);
 /**
@@ -107,7 +108,7 @@ void differentiation_validation_check(IRNode *root,
  */
 bool determine_ad_stack_size(IRNode *root, const CompileConfig &config);
 bool constant_fold(IRNode *root);
-void offload(IRNode *root, const CompileConfig &config);
+void offload(IRNode *root, const CompileConfig &config, std::unordered_map<const Stmt *, std::size_t> &local_to_global_offset_ret);
 bool transform_statements(
     IRNode *root,
     std::function<bool(Stmt *)> filter,

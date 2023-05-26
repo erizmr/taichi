@@ -91,7 +91,7 @@ class IndependentBlocksJudger : public BasicStmtVisitor {
         qualified_glb_operations_ = true;
       }
     } else {
-      TI_ASSERT(stmt->dest->is<GlobalPtrStmt>());
+      TI_ASSERT(stmt->dest->is<GlobalPtrStmt>() || stmt->dest->is<GlobalTemporaryStmt>());
       if (stmt->dest->as<GlobalPtrStmt>()->snode->has_adjoint()) {
         qualified_glb_operations_ = true;
       }
@@ -288,21 +288,26 @@ class IdentifyIndependentBlocks : public BasicStmtVisitor {
     depth_--;
   }
 
-  static std::set<Block *> run(IRNode *root) {
+  static std::set<Block *> run(OffloadedStmt *root) {
     IdentifyIndependentBlocks pass;
-    Block *block = root->as<Block>();
-    bool has_for = false;
-    for (auto &s : block->statements) {
-      if (s->is<StructForStmt>() || s->is<RangeForStmt>()) {
-        has_for = true;
-      }
-    }
-    if (!has_for) {
+    // Block *block = root->as<Block>();
+    if (root->task_type == OffloadedTaskType::serial){
       // The whole block is an IB
-      pass.independent_blocks_.push_back({0, block});
-    } else {
-      root->accept(&pass);
+      pass.independent_blocks_.push_back({0, root->body.get()});
+    }else if (root->task_type == OffloadedTaskType::struct_for){
+      pass.depth_++;
+      pass.current_ib_ = root->body.get();
+      pass.visit_loop_body(root->body.get());
+      pass.depth_--;
+    }else if (root->task_type == OffloadedTaskType::range_for){
+      pass.current_ib_ = root->body.get();
+      pass.depth_++;
+      pass.visit_loop_body(root->body.get());
+      pass.depth_--;
+    }else if (root->task_type == OffloadedTaskType::mesh_for){
+      TI_ERROR("Mesh for is currently not supported in AutoDiff.");
     }
+
     // Sort the IBs by their depth from shallow to deep
     std::sort(pass.independent_blocks_.begin(), pass.independent_blocks_.end(),
               [](const std::pair<int, Block *> &a,
@@ -2366,39 +2371,64 @@ $tmp = mul b3, b2             -->  $tmp = mul $b3, $b2             --> $15 = mul
 $y = mul $tmp, $x             -->  $y = mul $tmp, $x               --> $14 = mul($y_adj, $x)
 */
 // clang-format on
+
+
+class CollectOffloadedTasks : public BasicStmtVisitor {
+ public:
+  using BasicStmtVisitor::visit;
+
+  void visit(OffloadedStmt *stmt) override {
+    offloaded_tasks_.insert(stmt);
+  }
+
+  static std::set<OffloadedStmt *> run(IRNode *root) {
+    CollectOffloadedTasks pass;
+    Block *blocks = root->as<Block>();
+    blocks->accept(&pass);
+    return pass.offloaded_tasks_;
+  }
+
+ private:
+  std::set<OffloadedStmt*> offloaded_tasks_;
+};
+
+
 void auto_diff(IRNode *root,
                const CompileConfig &config,
+               std::unordered_map<const Stmt *, std::size_t> &local_to_global_offset_ret,
                AutodiffMode autodiff_mode,
                bool use_stack) {
   TI_AUTO_PROF;
   if (autodiff_mode == AutodiffMode::kReverse) {
     RegulateTensorTypedStatements::run(root);
-    if (use_stack) {
-      auto IB = IdentifyIndependentBlocks::run(root);
-      ReverseOuterLoops::run(root, IB);
+    auto offloaded_tasks = CollectOffloadedTasks::run(root);
+    for(auto offload_task:offloaded_tasks){
+      if (use_stack) {
+          auto IB = IdentifyIndependentBlocks::run(offload_task);
+          ReverseOuterLoops::run(root, IB);
+          for (auto ib : IB) {
+            PromoteSSA2LocalVar::run(ib);
+            ReplaceLocalVarWithStacks replace(config.ad_stack_size);
+            ib->accept(&replace);
+            type_check(root, config);
 
-      for (auto ib : IB) {
-        PromoteSSA2LocalVar::run(ib);
-        ReplaceLocalVarWithStacks replace(config.ad_stack_size);
-        ib->accept(&replace);
+            MakeAdjoint::run(ib);
+            type_check(root, config);
+            BackupSSA::run(ib);
+            irpass::analysis::verify(root);
+          }
+      } else {
+        auto IB = IdentifyIndependentBlocks::run(offload_task);
+        ReverseOuterLoops::run(root, IB);
         type_check(root, config);
-
-        MakeAdjoint::run(ib);
-        type_check(root, config);
-        BackupSSA::run(ib);
-        irpass::analysis::verify(root);
+        for (auto ib : IB) {
+          MakeAdjoint::run(ib);
+          type_check(root, config);
+          BackupSSA::run(ib);
+          irpass::analysis::verify(root);
+        }
       }
-    } else {
-      auto IB = IdentifyIndependentBlocks::run(root);
-      ReverseOuterLoops::run(root, IB);
-      type_check(root, config);
-      for (auto ib : IB) {
-        MakeAdjoint::run(ib);
-        type_check(root, config);
-        BackupSSA::run(ib);
-        irpass::analysis::verify(root);
-      }
-    }
+  }
   } else if (autodiff_mode == AutodiffMode::kForward) {
     // Forward mode autodiff
     Block *block = root->as<Block>();
