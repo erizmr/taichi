@@ -422,7 +422,7 @@ class PromoteSSA2LocalVar : public BasicStmtVisitor {
 
 
     if (!((stmt->is<GlobalLoadStmt>() && gradient_dst_.find(stmt) == gradient_dst_.end()) ||
-          stmt->is<AllocaStmt>())) {
+          stmt->is<AllocaStmt>() || stmt->is<ExternalPtrStmt>())) {
       // TODO: this list may be incomplete
       return;
     }
