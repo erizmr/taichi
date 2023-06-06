@@ -422,7 +422,7 @@ class PromoteSSA2LocalVar : public BasicStmtVisitor {
 
 
     if (!((stmt->is<GlobalLoadStmt>() && gradient_dst_.find(stmt) == gradient_dst_.end()) ||
-          stmt->is<AllocaStmt>() || stmt->is<ExternalPtrStmt>())) {
+          stmt->is<AllocaStmt>())) {
       // TODO: this list may be incomplete
       return;
     }
@@ -613,6 +613,16 @@ class CollectGradSrcDst : public BasicStmtVisitor {
         gradient_dst_.insert(stmt);
         if (!execute_once_) gradient_dst_inside_loop_.insert(stmt);
       }
+    } else if (stmt->src->is<ExternalPtrStmt>()){
+      ExternalPtrStmt *src = stmt->src->as<ExternalPtrStmt>();
+      TI_ASSERT(!src->is_grad);
+      auto arg = src->base_ptr->as<ArgLoadStmt>();
+      if (arg->ret_type.ptr_removed()->as<StructType>()->elements().size() >
+          TypeFactory::GRAD_PTR_POS_IN_NDARRAY) {
+          std::cout << " External Ptr Global load " << stmt->id << std::endl;
+          gradient_dst_.insert(stmt);
+          if (!execute_once_) gradient_dst_inside_loop_.insert(stmt);
+      }
     }
   }
 
@@ -624,6 +634,15 @@ class CollectGradSrcDst : public BasicStmtVisitor {
         std::cout << " Global store " << stmt->id << std::endl;
         gradient_src_.insert(stmt);
       }
+    } else if (stmt->dest->is<ExternalPtrStmt>()){
+      ExternalPtrStmt *dst = stmt->dest->as<ExternalPtrStmt>();
+      TI_ASSERT(!dst->is_grad);
+      auto arg = dst->base_ptr->as<ArgLoadStmt>();
+      if (arg->ret_type.ptr_removed()->as<StructType>()->elements().size() >
+          TypeFactory::GRAD_PTR_POS_IN_NDARRAY) {
+          std::cout << " External Ptr Global store " << stmt->id << std::endl;
+          gradient_src_.insert(stmt);
+      }
     }
   }
 
@@ -634,6 +653,15 @@ class CollectGradSrcDst : public BasicStmtVisitor {
       if (snode->has_adjoint()) {
         std::cout << " Atomic add " << stmt->id << std::endl;
         gradient_src_.insert(stmt);
+      }
+    } else if (stmt->dest->is<ExternalPtrStmt>()){
+      ExternalPtrStmt *dst = stmt->dest->as<ExternalPtrStmt>();
+      TI_ASSERT(!dst->is_grad);
+      auto arg = dst->base_ptr->as<ArgLoadStmt>();
+      if (arg->ret_type.ptr_removed()->as<StructType>()->elements().size() >
+          TypeFactory::GRAD_PTR_POS_IN_NDARRAY) {
+          std::cout << " External Ptr Atomic add " << stmt->id << std::endl;
+          gradient_src_.insert(stmt);
       }
     }
     
