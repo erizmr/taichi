@@ -327,7 +327,7 @@ class IdentifyIndependentBlocks : public BasicStmtVisitor {
 
 // Note that SSA does not mean the instruction will be executed at most once.
 // For instructions that may be executed multiple times, we treat them as a
-// mutable local variables.
+// mutable local variables. 
 class PromoteSSA2LocalVar : public BasicStmtVisitor {
   using BasicStmtVisitor::visit;
 
@@ -1504,6 +1504,10 @@ class MakeAdjoint : public ADTransform {
     insert<AdStackPopStmt>(stmt->stack);
   }
 
+  // void visit(GlobalTemporaryStmt *stmt) override {
+
+  // }
+
   void visit(GlobalLoadStmt *stmt) override {
     // issue global store to adjoint
 
@@ -1643,6 +1647,10 @@ class MakeAdjoint : public ADTransform {
       accumulate(stmt->val, insert<GlobalLoadStmt>(adjoint_ptr));
     }
 
+    if (stmt->dest->is<GlobalPtrStmt>()){
+      
+    }
+    TI_ASSERT_INFO(adjoint_ptr != nullptr, "adjoint pointer is null")
     // Clear the gradient after accumulation finished.
     auto zero =
         insert_const_for_grad(adjoint_ptr->ret_type.ptr_removed(), stmt, 0);
@@ -2407,12 +2415,18 @@ void auto_diff(IRNode *root,
           auto IB = IdentifyIndependentBlocks::run(offload_task);
           ReverseOuterLoops::run(root, IB);
           for (auto ib : IB) {
+            std::cout << " promote before"<< std::endl;
             PromoteSSA2LocalVar::run(ib);
+            std::cout << " promote after"<< std::endl;
             ReplaceLocalVarWithStacks replace(config.ad_stack_size);
+            std::cout << " replace before"<< std::endl;
             ib->accept(&replace);
+            std::cout << " replace after"<< std::endl;
             type_check(root, config);
 
+            std::cout << " make adjoint before"<< std::endl;
             MakeAdjoint::run(ib);
+            std::cout << " make adjoint after"<< std::endl;
             type_check(root, config);
             BackupSSA::run(ib);
             irpass::analysis::verify(root);
