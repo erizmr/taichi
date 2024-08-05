@@ -58,6 +58,7 @@ class CacheLoopInvariantGlobalVars : public LoopInvariantDetector {
 
   bool is_offload_unique(Stmt *stmt) {
     if (current_offloaded->task_type == OffloadedTaskType::serial) {
+      std::cout << "stmt" << stmt->id <<" is a loop unique ptr because offload task is serial"<< std::endl;
       return true;
     }
 
@@ -92,6 +93,8 @@ class CacheLoopInvariantGlobalVars : public LoopInvariantDetector {
         // BLS does not support write access yet so we keep atomic_adds.
         return false;
       }
+
+      std::cout << "global ptr " << stmt->id <<" is a loop unique ptr"<< std::endl;
       return true;
     }
 
@@ -122,6 +125,8 @@ class CacheLoopInvariantGlobalVars : public LoopInvariantDetector {
         // Not loop unique
         return false;
       }
+
+      std::cout << "external ptr " << stmt->id <<" is a loop unique ptr"<< std::endl;
       return true;
       // TODO: Is BLS / Mem Access Opt a thing for any_arr?
     }
@@ -174,9 +179,11 @@ class CacheLoopInvariantGlobalVars : public LoopInvariantDetector {
 
   std::optional<int> find_cache_depth_if_cacheable(Stmt *operand,
                                                    Block *current_scope) {
+    std::cout << "Checking operand " << operand->id << " is offload unique or not ..."<< std::endl;
     if (!is_offload_unique(operand)) {
       return std::nullopt;
     }
+    std::cout << " operand " << operand->id << " is offload unique"<< std::endl;
     std::optional<int> depth;
     for (int n = loop_blocks.size() - 1; n > 0; n--) {
       if (is_operand_loop_invariant(operand, current_scope, n)) {
@@ -185,6 +192,7 @@ class CacheLoopInvariantGlobalVars : public LoopInvariantDetector {
         break;
       }
     }
+    // std::cout << "computed depth " << depth.value() << std::endl;
     return depth;
   }
 
@@ -200,7 +208,9 @@ class CacheLoopInvariantGlobalVars : public LoopInvariantDetector {
   }
 
   void visit(GlobalStoreStmt *stmt) override {
+    std::cout << "I am moving a GlobalStoreStmt " << stmt->id << " " << stmt->dest->id << " " << std::endl;
     if (auto depth = find_cache_depth_if_cacheable(stmt->dest, stmt->parent)) {
+      std::cout << " decide to move " << stmt->id << " with depth " << depth.value() <<std::endl;
       auto alloca_stmt =
           cache_global_to_local(stmt->dest, CacheStatus::Write, depth.value());
       auto local_store =
