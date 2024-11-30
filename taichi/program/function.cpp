@@ -26,8 +26,12 @@ void Function::set_function_body(const std::function<void()> &func) {
 
   if (program->compile_config().offline_cache) {  // For generating AST-Key
     std::ostringstream oss;
-    gen_offline_cache_key(ir.get(), &oss);
-    ast_serialization_data_ = oss.str();
+    // gen_offline_cache_key(ir.get(), &oss);
+    // ast_serialization_data_ = oss.str();
+
+    std::vector<char> string_holder;
+    gen_offline_cache_key(ir.get(), &string_holder, &oss);
+    ast_serialization_data_ = std::string(string_holder.begin(), string_holder.end());
   }
 }
 

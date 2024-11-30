@@ -72,13 +72,31 @@ const CompiledKernelData &KernelCompilationManager::load_or_compile(
     const CompileConfig &compile_config,
     const DeviceCapabilityConfig &caps,
     const Kernel &kernel_def) {
+  auto t = Time::get_time();
   auto cache_mode = get_cache_mode(compile_config, kernel_def);
+  TI_TRACE("get_cache_mode costs {} ms", (Time::get_time() - t) * 1000);
+
+  t = Time::get_time();
   const auto kernel_key = make_kernel_key(compile_config, caps, kernel_def);
+  TI_TRACE("make_kernel_key {} costs {} ms", kernel_key, (Time::get_time() - t) * 1000);
+
+  t = Time::get_time();
   auto cached_kernel = try_load_cached_kernel(kernel_def, kernel_key,
                                               compile_config.arch, cache_mode);
-  return cached_kernel ? *cached_kernel
-                       : compile_and_cache_kernel(kernel_key, compile_config,
+  TI_TRACE("Try load cached kernel {} costs {} ms", kernel_key, (Time::get_time() - t) * 1000);
+  // return cached_kernel ? *cached_kernel
+  //                      : compile_and_cache_kernel(kernel_key, compile_config,
+  //                                                 caps, kernel_def);
+
+  if (cached_kernel){
+    return *cached_kernel;
+  }else{
+    t = Time::get_time() - t;
+    return compile_and_cache_kernel(kernel_key, compile_config,
                                                   caps, kernel_def);
+    TI_TRACE("compile_and_cache_kernel {} costs {} ms", kernel_key, t * 1000);                                                
+  }
+
 }
 
 void KernelCompilationManager::dump() {
@@ -181,13 +199,17 @@ std::string KernelCompilationManager::make_kernel_key(
     const CompileConfig &compile_config,
     const DeviceCapabilityConfig &caps,
     const Kernel &kernel_def) const {
+  auto t = Time::get_time();
   auto kernel_key = kernel_def.get_cached_kernel_key();
+  TI_TRACE("get_cached_kernel_key costs {} ms", (Time::get_time() - t) * 1000);
   if (kernel_key.empty()) {
     if (!kernel_def.ir_is_ast()) {
       kernel_key = kernel_def.get_name();
     } else {  // The kernel key is generated from AST
+      t = Time::get_time();
       kernel_key = get_hashed_offline_cache_key(compile_config, caps,
                                                 (Kernel *)&kernel_def);
+      TI_TRACE("get_hashed_offline_cache_key costs {} ms", (Time::get_time() - t) * 1000);
     }
 
     kernel_def.set_kernel_key_for_cache(kernel_key);

@@ -183,7 +183,10 @@ const CompiledKernelData &Program::compile_kernel(
   TI_AUTO_PROF;
   auto &mgr = program_impl_->get_kernel_compilation_manager();
   const auto &ckd = mgr.load_or_compile(compile_config, caps, kernel_def);
-  total_compilation_time_ += Time::get_time() - start_t;
+
+  auto t = Time::get_time() - start_t;
+  TI_TRACE("load_or_compile costs {} ms", t * 1000); 
+  total_compilation_time_ += t; //Time::get_time() - start_t;
   return ckd;
 }
 

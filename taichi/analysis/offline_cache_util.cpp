@@ -172,19 +172,59 @@ std::string get_hashed_offline_cache_key(const CompileConfig &config,
                                          Kernel *kernel) {
   std::vector<std::uint8_t> kernel_params_string, kernel_rets_string;
   std::string kernel_body_string;
+
+  auto t = Time::get_time();
+
   if (kernel) {  // param_list, rets, body
+    t = Time::get_time();
     kernel_params_string =
         get_offline_cache_key_of_parameter_list(kernel->parameter_list);
+    TI_TRACE("get_offline_cache_key_of_parameter_list costs {} ms", (Time::get_time() - t) * 1000);
+    
+    t = Time::get_time();
     kernel_rets_string = get_offline_cache_key_of_rets(kernel->rets);
+    TI_TRACE("get_offline_cache_key_of_rets costs {} ms", (Time::get_time() - t) * 1000);
     std::ostringstream oss;
-    gen_offline_cache_key(kernel->ir.get(), &oss);
-    kernel_body_string = oss.str();
+
+    std::vector<char> string_holder;
+    
+    // gen_offline_cache_key(kernel->ir.get(), &oss);
+    TI_TRACE(" KERNEL NAME {}", kernel->name);
+    if (kernel->name == "snode_reader_254" || kernel->name == "snode_reader_256"){
+      // TI_TRACE("{} - {}", kernel->name, kernel->ir.get());
+
+      TI_TRACE("[{}]:", kernel->name);
+      auto ir = kernel->ir.get();
+      std::cout << std::flush;
+      irpass::re_id(ir);
+      irpass::print(ir, /*output=*/nullptr, false);
+      std::cout << std::flush;
+
+    }
+    t = Time::get_time();
+    gen_offline_cache_key(kernel->ir.get(), &string_holder, &oss);
+    TI_TRACE("gen_offline_cache_key costs {} ms", (Time::get_time() - t) * 1000);
+    std::string kernel_body_string_from_os = oss.str();
+    // std::ostringstream hexStream;
+    // for (auto c : string_holder) {
+    //     hexStream << c;
+    // }
+    kernel_body_string = std::string(string_holder.begin(), string_holder.end());
+    bool is_equal = kernel_body_string.compare(kernel_body_string_from_os);
+    // kernel_body_string = hexStream.str();
+    // TI_TRACE("compare bewtten oss string: {} and vector char {} string: {} end", kernel_body_string_from_os, string_holder.size(), kernel_body_string);
+    TI_TRACE("compare bewtten oss string: {} and vector char {}  is same {} end", kernel_body_string_from_os.size(), string_holder.size(), is_equal);
+    // kernel_body_string = kernel_body_string_from_os;
   }
 
+  t = Time::get_time();
   auto compile_config_key = get_offline_cache_key_of_compile_config(config);
+  TI_TRACE("get_offline_cache_key_of_compile_config costs {} ms", (Time::get_time() - t) * 1000);
   auto device_caps_key = get_offline_cache_key_of_device_caps(caps);
   std::string autodiff_mode =
       std::to_string(static_cast<std::size_t>(kernel->autodiff_mode));
+
+  t = Time::get_time();
   picosha2::hash256_one_by_one hasher;
   hasher.process(compile_config_key.begin(), compile_config_key.end());
   hasher.process(device_caps_key.begin(), device_caps_key.end());
@@ -195,7 +235,9 @@ std::string get_hashed_offline_cache_key(const CompileConfig &config,
   hasher.finish();
 
   auto res = picosha2::get_hash_hex_string(hasher);
+  TI_TRACE("picosha2 process hash costs {} ms", (Time::get_time() - t) * 1000);
   res.insert(res.begin(), 'T');  // The key must start with a letter
+  TI_TRACE("insert hash res costs {} ms", (Time::get_time() - t) * 1000);
   return res;
 }
 

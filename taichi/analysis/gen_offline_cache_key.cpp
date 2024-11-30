@@ -53,17 +53,22 @@ class ASTSerializer : public IRVisitor, public ExpressionVisitor {
   using IRVisitor::visit;
 
  public:
-  explicit ASTSerializer(std::ostream *os) : ExpressionVisitor(false), os_(os) {
+  explicit ASTSerializer(std::vector<char> *string_holder, std::ostream *os) : ExpressionVisitor(false), string_holder_(string_holder), os_(os) {
     this->allow_undefined_visitor = false;
   }
 
-  void set_ostream(std::ostream *os) {
-    this->os_ = os;
-  }
+  // explicit ASTSerializer(std::ostream *os) : ExpressionVisitor(false), os_(os) {
+  //   this->allow_undefined_visitor = false;
+  // }
 
-  std::ostream *get_ostream() {
-    return this->os_;
-  }
+
+  // void set_ostream(std::ostream *os) {
+  //   this->os_ = os;
+  // }
+
+  // std::ostream *get_ostream() {
+  //   return this->os_;
+  // }
 
   void visit(Expression *expr) override {
     this->ExpressionVisitor::visit(expr);
@@ -404,6 +409,8 @@ class ASTSerializer : public IRVisitor, public ExpressionVisitor {
   void visit(FrontendReturnStmt *stmt) override {
     emit(StmtOpCode::FrontendReturnStmt);
     emit(stmt->values.exprs);
+    // TI_TRACE("Frontend Return oss {} end.", os_->str());
+    TI_TRACE("Frontend Return is empty {} vector char {} end.", string_holder_->empty(), string_holder_->size());
   }
 
   void visit(FrontendExternalFuncStmt *stmt) override {
@@ -424,8 +431,13 @@ class ASTSerializer : public IRVisitor, public ExpressionVisitor {
     emit(stmt->outputs);
   }
 
-  static void run(IRNode *ast, std::ostream *os) {
-    ASTSerializer serializer(os);
+  // static void run(IRNode *ast, std::ostream *os) {
+  //   ASTSerializer serializer(os);
+  //   ast->accept(&serializer);
+  //   serializer.emit_dependencies();
+  // }
+  static void run(IRNode *ast, std::vector<char> *string_holder, std::ostream *os) {
+    ASTSerializer serializer(string_holder, os);
     ast->accept(&serializer);
     serializer.emit_dependencies();
   }
@@ -457,15 +469,21 @@ class ASTSerializer : public IRVisitor, public ExpressionVisitor {
   template <typename T>
   void emit_pod(const T &val) {
     static_assert(std::is_pod<T>::value);
-    TI_ASSERT(os_);
-    os_->write((const char *)&val, sizeof(T));
+    // TI_ASSERT(os_);
+    // os_->write((const char *)&val, sizeof(T));
+
+    // Get the raw bytes of `val` and append them to `string_holder_`
+    const char* data = reinterpret_cast<const char*>(&val);
+    string_holder_->insert(string_holder_->end(), data, data + sizeof(T));
+
   }
 
   void emit_bytes(const char *bytes, std::size_t len) {
-    TI_ASSERT(os_);
+    // TI_ASSERT(os_);
     if (!bytes)
       return;
-    os_->write(bytes, len);
+    // os_->write(bytes, len);
+    string_holder_->insert(string_holder_->end(), bytes, bytes + len);
   }
 
   template <typename T>
@@ -653,6 +671,7 @@ class ASTSerializer : public IRVisitor, public ExpressionVisitor {
 
 #undef DEFINE_EMIT_ENUM
 
+  std::vector<char> *string_holder_;
   std::ostream *os_{nullptr};
   std::vector<const SNode *> snode_tree_roots_;
   std::map<Function *, std::size_t> real_funcs_;
@@ -661,8 +680,12 @@ class ASTSerializer : public IRVisitor, public ExpressionVisitor {
 
 }  // namespace
 
-void gen_offline_cache_key(IRNode *ast, std::ostream *os) {
-  ASTSerializer::run(ast, os);
+// void gen_offline_cache_key(IRNode *ast, std::ostream *os) {
+//   ASTSerializer::run(ast, os);
+// }
+
+void gen_offline_cache_key(IRNode *ast, std::vector<char> *string_holder, std::ostream *os) {
+  ASTSerializer::run(ast, string_holder, os);
 }
 
 }  // namespace taichi::lang
